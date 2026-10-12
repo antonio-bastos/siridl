@@ -30,7 +30,7 @@ from ultralytics.engine.results import Results
 # ---------------------------------------------------------
 
 SOURCE = Path("dataset")
-MODEL_PATH = Path("runs/pothole/baseline/weights/best.pt")
+MODEL_PATH = Path("runs/detect/runs/pothole/baseline/weights/best.pt")
 OUTPUT = Path("pseudo_dataset")
 
 CONFIDENCE = 0.75

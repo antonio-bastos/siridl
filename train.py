@@ -16,14 +16,14 @@ from ultralytics import YOLO
 BASE_MODEL = "yolo11s.pt"
 DATA_YAML = Path("dataset_yolo/data.yaml")
 
-PROJECT = "runs/pothole"
+PROJECT = Path.cwd() / "runs" / "pothole"
 RUN_NAME = "baseline"
-RUN_DIR = Path(PROJECT) / RUN_NAME
+RUN_DIR = PROJECT / RUN_NAME
 BEST_WEIGHTS = RUN_DIR / "weights" / "best.pt"
 
 EPOCHS = 100
-IMAGE_SIZE = 640
-BATCH_SIZE = 16
+IMAGE_SIZE = 1088
+BATCH_SIZE = 8
 DEVICE = 0
 WORKERS = 8
 PATIENCE = 20

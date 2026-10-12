@@ -12,7 +12,3 @@ Deep Learning: YOLOv8/YOLOv11 para deteção de múltiplos tipos de anomalias vi
 Geolocalização & Backend: Python, FastAPI e base de dados PostgreSQL com extensão PostGIS para consultas espaciais eficientes.
 
 Visualização: Frontend em Next.js com integração de mapas vetoriais (Leaflet ou Mapbox).
-
-Por que impressiona o Júri: Une visão computacional com sistemas de informação geográfica (SIG) para resolver um problema visível de gestão autárquica.
-
-Modelo de Negócio: Modelo B2G (Business to Government) cobrado como subscrição anual de auditoria e inventário viário (€400 a €1.200/mês por município).
