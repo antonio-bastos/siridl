@@ -1,5 +1,29 @@
-dataset
-dataset_yolo
-state
-weights
-runs
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Environments
+.venv/
+env/
+venv/
+ENV/
+
+# Datasets & generated YOLO files
+dataset/
+dataset_yolo/
+archive/
+pseudo_dataset/
+
+# Weights & Training outputs
+runs/
+weights/
+*.pt
+*.onnx
+*.engine
+
+# Predictions & temporary debug
+predictions/
+*.log
