@@ -27,3 +27,9 @@ weights/
 # Predictions & temporary debug
 predictions/
 *.log
+
+# Node & Next.js
+node_modules/
+.next/
+out/
+.env*.local
