@@ -7,7 +7,9 @@ import type { RoadAnomaly } from "@/models/road-anomalies";
 export async function GET() {
   const extra: RoadAnomaly[] = [];
   try {
-    const predRoot = path.join(process.cwd(), "predictions");
+    const localPred = path.join(process.cwd(), "predictions");
+    const parentPred = path.join(process.cwd(), "..", "predictions");
+    const predRoot = fs.existsSync(localPred) ? localPred : parentPred;
     if (fs.existsSync(predRoot)) {
       const files: string[] = [];
       const walk = (dir: string) => {

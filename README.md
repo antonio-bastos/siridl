@@ -11,4 +11,19 @@ Deep Learning: YOLOv8/YOLOv11 para deteção de múltiplos tipos de anomalias vi
 
 Geolocalização & Backend: Python, FastAPI e base de dados PostgreSQL com extensão PostGIS para consultas espaciais eficientes.
 
-Visualização: Frontend em Next.js com integração de mapas vetoriais (Leaflet ou Mapbox).
+Visualização: Frontend em Next.js com integração de mapas vetoriais (Leaflet ou Mapbox), localizado em `dashboard/`.
+
+## Dashboard Web
+
+Para executar o dashboard SIG:
+
+```bash
+cd dashboard
+npm run dev
+```
+
+Ou a partir da raiz:
+
+```bash
+npm --prefix dashboard run dev
+```
