@@ -102,7 +102,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
   }, []);
 
   return (
-    <div className="flex min-h-svh w-full bg-background text-foreground">
+    <div className="flex h-svh w-full overflow-hidden bg-background text-foreground">
       <aside
         className={cn(
           "sticky top-0 hidden h-svh shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground md:flex",
@@ -224,7 +224,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
           </Button>
         </header>
 
-        <main className="min-w-0 max-w-full flex-1 p-0">
+        <main className="min-h-0 min-w-0 max-w-full flex-1 overflow-y-auto p-0">
           <div className="enter-rise h-full w-full">{children}</div>
         </main>
       </div>

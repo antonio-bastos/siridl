@@ -38,7 +38,7 @@ export const SegmentedControl: React.FC<{
   }, [index, options.length]);
 
   return (
-    <div id={id} role="group" className={cn("relative flex h-9 w-full items-stretch rounded-md border bg-background p-[3px] dark:bg-input/30", className)}>
+    <div id={id} role="group" className={cn("relative flex h-9 w-full items-stretch gap-1 rounded-md border bg-background p-[3px] dark:bg-input/30", className)}>
       <div
         aria-hidden
         className={cn(
@@ -69,7 +69,7 @@ export const SegmentedControl: React.FC<{
             className={cn(
               "relative z-10 flex flex-1 items-center justify-center gap-1.5 rounded-sm px-2 text-sm font-medium whitespace-nowrap transition-colors duration-200 outline-none",
               "focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50",
-              i > 0 && "before:absolute before:inset-y-1.5 before:left-0 before:w-px before:bg-border before:transition-opacity before:duration-200",
+              i > 0 && "before:absolute before:inset-y-1.5 before:-left-0.5 before:w-px before:bg-border before:transition-opacity before:duration-200",
               (chosen || i === index + 1) && "before:opacity-0",
               !chosen && "hover:bg-accent/70",
               chosen ? cn(option.activeClassName, "border-0 bg-transparent shadow-none dark:bg-transparent") : "text-muted-foreground hover:text-foreground",

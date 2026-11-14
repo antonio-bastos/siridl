@@ -277,7 +277,7 @@ export const AnomalyDetail: React.FC<AnomalyDetailProps> = ({
 
         {/* Positioned cleanly below capture & severity badge, never overlapping top-right close button */}
         {row.detections.length > 0 && row.image_url && !imgError && (
-          <div className="flex items-center justify-between gap-2 rounded-lg border border-border/70 bg-muted/35 px-3 py-1.5">
+          <div className="flex items-center justify-between gap-2 rounded-lg border bg-background px-3 py-1.5 elev-1 dark:border-input dark:bg-input/30">
             <span className="text-[11px] text-muted-foreground">
               {row.detections.length} {row.detections.length === 1 ? "caixa detetada" : "caixas detetadas"} ·{" "}
               {totalSpeedMs > 0 ? `${totalSpeedMs.toFixed(1)} ms` : "YOLOv11"}
@@ -285,7 +285,7 @@ export const AnomalyDetail: React.FC<AnomalyDetailProps> = ({
             <button
               type="button"
               onClick={() => setShowDetections((v) => !v)}
-              className="inline-flex cursor-pointer items-center gap-1.5 rounded-md bg-background px-2 py-1 text-[11px] font-medium text-foreground shadow-2xs ring-1 ring-border/70 transition-colors hover:bg-muted"
+              className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border bg-background px-2 py-1 text-[11px] font-medium text-foreground elev-1 transition-colors hover:bg-accent hover:text-accent-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50"
             >
               {showDetections ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
               Alternar caixas delimitadoras YOLOv11
@@ -296,7 +296,7 @@ export const AnomalyDetail: React.FC<AnomalyDetailProps> = ({
 
       {/* Key Metric Grid (4 chunks — Miller's Law) */}
       <motion.section {...(reduceMotion ? {} : rise(0.08))} className="grid grid-cols-2 gap-2.5">
-        <div className="rounded-xl border border-border/80 bg-muted/25 p-3">
+        <div className="rounded-xl border bg-background p-3 elev-1 dark:border-input dark:bg-input/30">
           <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <Gauge className="size-3.5" style={{ color: SEVERITY_COLOR_VAR[severity] }} />
             Índice de Gravidade
@@ -307,7 +307,7 @@ export const AnomalyDetail: React.FC<AnomalyDetailProps> = ({
           </div>
         </div>
 
-        <div className="rounded-xl border border-border/80 bg-muted/25 p-3">
+        <div className="rounded-xl border bg-background p-3 elev-1 dark:border-input dark:bg-input/30">
           <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <Ruler className="size-3.5 text-primary" />
             Área da Cavidade
@@ -320,7 +320,7 @@ export const AnomalyDetail: React.FC<AnomalyDetailProps> = ({
           </div>
         </div>
 
-        <div className="rounded-xl border border-border/80 bg-muted/25 p-3">
+        <div className="rounded-xl border bg-background p-3 elev-1 dark:border-input dark:bg-input/30">
           <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <Activity className="size-3.5 text-amber-500" />
             Profundidade Est.
@@ -331,7 +331,7 @@ export const AnomalyDetail: React.FC<AnomalyDetailProps> = ({
           </div>
         </div>
 
-        <div className="rounded-xl border border-border/80 bg-muted/25 p-3">
+        <div className="rounded-xl border bg-background p-3 elev-1 dark:border-input dark:bg-input/30">
           <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <Scan className="size-3.5 text-teal-600" />
             Passagens / Deteções
@@ -347,7 +347,7 @@ export const AnomalyDetail: React.FC<AnomalyDetailProps> = ({
 
       {/* Repair status selector (if interactive handler supplied) */}
       {onUpdateStatus && (
-        <motion.section {...(reduceMotion ? {} : rise(0.1))} className="space-y-2 rounded-xl border border-border/80 bg-card p-3">
+        <motion.section {...(reduceMotion ? {} : rise(0.1))} className="space-y-2 rounded-xl border bg-background p-3 elev-1 dark:border-input dark:bg-input/30">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-foreground">Estado de Despacho Municipal</span>
             <span className="text-[11px] text-muted-foreground">{SEVERITY_LABEL[severity]}</span>
@@ -363,8 +363,8 @@ export const AnomalyDetail: React.FC<AnomalyDetailProps> = ({
                   className={cn(
                     "flex cursor-pointer items-center justify-between rounded-lg border px-2.5 py-1.5 text-left text-[11px] font-medium transition-colors",
                     active
-                      ? "border-primary bg-primary/10 text-primary"
-                      : "border-border/70 bg-muted/20 text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                      ? "border-primary bg-primary/10 text-primary elev-1"
+                      : "border-border bg-background text-muted-foreground elev-1 hover:bg-accent hover:text-accent-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
                   )}
                 >
                   <span className="truncate">{opt.label}</span>
@@ -378,7 +378,7 @@ export const AnomalyDetail: React.FC<AnomalyDetailProps> = ({
 
       {/* Sector Spectrum Positioning */}
       {q && (
-        <motion.section {...(reduceMotion ? {} : rise(0.12))} className="space-y-2.5 rounded-xl border border-border/80 bg-muted/20 p-3.5">
+        <motion.section {...(reduceMotion ? {} : rise(0.12))} className="space-y-2.5 rounded-xl border bg-background p-3.5 elev-1 dark:border-input dark:bg-input/30">
           <div className="flex items-center justify-between gap-2">
             <div>
               <h3 className="text-xs font-semibold text-foreground">Posição face ao setor</h3>
@@ -406,15 +406,15 @@ export const AnomalyDetail: React.FC<AnomalyDetailProps> = ({
           />
 
           <div className="grid grid-cols-3 gap-2 pt-1 text-center text-[11px] text-muted-foreground">
-            <div className="rounded-md bg-background/70 px-2 py-1">
+            <div className="rounded-md border bg-background px-2 py-1 elev-1 dark:border-input dark:bg-input/30">
               <div className="text-[10px] uppercase tracking-wider">P25 setor</div>
               <div className="font-mono font-semibold text-foreground">{Math.round(q.p25)}</div>
             </div>
-            <div className="rounded-md bg-background/70 px-2 py-1">
+            <div className="rounded-md border bg-background px-2 py-1 elev-1 dark:border-input dark:bg-input/30">
               <div className="text-[10px] uppercase tracking-wider">Mediana</div>
               <div className="font-mono font-semibold text-foreground">{Math.round(q.median)}</div>
             </div>
-            <div className="rounded-md bg-background/70 px-2 py-1">
+            <div className="rounded-md border bg-background px-2 py-1 elev-1 dark:border-input dark:bg-input/30">
               <div className="text-[10px] uppercase tracking-wider">P75 setor</div>
               <div className="font-mono font-semibold text-foreground">{Math.round(q.p75)}</div>
             </div>
@@ -443,7 +443,7 @@ export const AnomalyDetail: React.FC<AnomalyDetailProps> = ({
               return (
                 <li
                   key={idx}
-                  className="flex items-start gap-2.5 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs leading-relaxed"
+                  className="flex items-start gap-2.5 rounded-lg border bg-background px-3 py-2 text-xs leading-relaxed elev-1 dark:border-input dark:bg-input/30"
                 >
                   <Icon className="mt-0.5 size-3.5 shrink-0 text-primary" />
                   <span className="text-muted-foreground">
@@ -464,7 +464,7 @@ export const AnomalyDetail: React.FC<AnomalyDetailProps> = ({
             <TrendingUp className="size-3.5 text-primary" />
             Evolução em Patrulhas ({row.severity_history.length})
           </div>
-          <div className="space-y-1.5 rounded-xl border border-border/80 bg-muted/15 p-3">
+          <div className="space-y-1.5 rounded-xl border bg-background p-3 elev-1 dark:border-input dark:bg-input/30">
             {row.severity_history.map((entry, idx) => (
               <div key={idx} className="flex items-center justify-between text-[11px]">
                 <span className="font-mono text-muted-foreground">{shortDate(entry.at)}</span>
@@ -492,7 +492,7 @@ export const AnomalyDetail: React.FC<AnomalyDetailProps> = ({
           selection={{ kind: "circle", lat: row.latitude, lng: row.longitude, radiusM: 450 }}
           pins={sectorPins}
           height={165}
-          className="w-full rounded-xl border border-border/80"
+          className="w-full rounded-xl border elev-1 dark:border-input"
         />
       </motion.section>
 
@@ -512,7 +512,7 @@ export const AnomalyDetail: React.FC<AnomalyDetailProps> = ({
                     onClick={() => onOpenAnomaly(peer.id)}
                     onMouseEnter={() => setHoveredId(peer.id)}
                     onMouseLeave={() => setHoveredId(null)}
-                    className="flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg border border-border/70 bg-card px-3 py-2 text-left transition-colors hover:border-primary/40 hover:bg-muted/40"
+                    className="flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg border bg-background px-3 py-2 text-left elev-1 transition-colors hover:bg-accent hover:text-accent-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50"
                   >
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5">

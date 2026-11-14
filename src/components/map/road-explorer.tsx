@@ -72,7 +72,7 @@ export const RoadExplorer: React.FC<RoadExplorerProps> = ({
           </div>
         </div>
       ) : (
-        <div className="rounded-xl border border-primary/40 bg-card p-3.5 shadow-sm">
+        <div className="rounded-xl border border-primary/40 bg-background p-3.5 elev-1 dark:bg-input/30">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
@@ -102,7 +102,7 @@ export const RoadExplorer: React.FC<RoadExplorerProps> = ({
             </Button>
           </div>
 
-          <div className="mt-3 flex items-baseline justify-between rounded-lg border bg-muted/35 px-3 py-2.5">
+          <div className="mt-3 flex items-baseline justify-between rounded-lg border bg-background px-3 py-2.5 elev-1 dark:border-input dark:bg-input/30">
             <div>
               <span className="text-2xl font-bold tracking-tight tabular-nums text-foreground">
                 {issueCount}
@@ -111,29 +111,25 @@ export const RoadExplorer: React.FC<RoadExplorerProps> = ({
                 {issueCount === 1 ? "buraco / ocorrência registada" : "buracos / ocorrências registadas"}
               </span>
             </div>
-            {criticalCount > 0 ? (
+            {criticalCount > 0 && (
               <Badge variant="destructive-light" size="xs">
                 {criticalCount} {criticalCount === 1 ? "crítica" : "críticas"}
               </Badge>
-            ) : issueCount === 0 && !inspection.loading ? (
-              <Badge variant="success-light" size="xs">
-                Sem ocorrências
-              </Badge>
-            ) : null}
+            )}
           </div>
 
           {issueCount > 0 ? (
             <>
               <div className="mt-2.5 grid grid-cols-3 gap-1.5 text-center">
-                <div className="rounded-lg border bg-background px-2 py-1.5">
+                <div className="rounded-lg border bg-background px-2 py-1.5 elev-1 dark:border-input dark:bg-input/30">
                   <div className="text-xs font-bold tabular-nums">{pendingCount}</div>
                   <div className="text-[10px] text-muted-foreground">Pendentes</div>
                 </div>
-                <div className="rounded-lg border bg-background px-2 py-1.5">
+                <div className="rounded-lg border bg-background px-2 py-1.5 elev-1 dark:border-input dark:bg-input/30">
                   <div className="text-xs font-bold tabular-nums">{activeCount}</div>
                   <div className="text-[10px] text-muted-foreground">Em curso/agend.</div>
                 </div>
-                <div className="rounded-lg border bg-background px-2 py-1.5">
+                <div className="rounded-lg border bg-background px-2 py-1.5 elev-1 dark:border-input dark:bg-input/30">
                   <div className="text-xs font-bold tabular-nums">
                     {(inspection.issues.reduce((s, r) => s + r.depth_cm, 0) / issueCount).toFixed(1)} cm
                   </div>
@@ -150,7 +146,7 @@ export const RoadExplorer: React.FC<RoadExplorerProps> = ({
                     onMouseLeave={() => onHover(null)}
                     onClick={() => onOpenIssue(item.id)}
                     className={cn(
-                      "flex cursor-pointer items-center justify-between gap-2 rounded-lg border bg-background px-2.5 py-2 text-left transition-colors hover:border-primary/40 hover:bg-muted/40",
+                      "flex cursor-pointer items-center justify-between gap-2 rounded-lg border bg-background px-2.5 py-2 text-left elev-1 transition-colors hover:bg-accent hover:text-accent-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
                       hoveredId === item.id && "border-primary/60 bg-primary/5",
                     )}
                   >
@@ -220,7 +216,7 @@ export const RoadExplorer: React.FC<RoadExplorerProps> = ({
                   type="button"
                   onClick={() => onSelectRoadSummary(road)}
                   className={cn(
-                    "flex cursor-pointer items-center justify-between gap-2.5 rounded-xl border bg-card px-3 py-2.5 text-left transition-colors hover:border-primary/40 hover:bg-muted/35",
+                    "flex cursor-pointer items-center justify-between gap-2.5 rounded-xl border bg-background px-3 py-2.5 text-left elev-1 transition-colors hover:bg-accent hover:text-accent-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
                     selected && "border-primary bg-primary/5",
                   )}
                 >
