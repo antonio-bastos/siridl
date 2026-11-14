@@ -5,6 +5,7 @@ import { motion, useReducedMotion } from "motion/react";
 import {
   Activity,
   ArrowLeft,
+  CalendarClock,
   Camera,
   CheckCircle2,
   Clock,
@@ -18,6 +19,7 @@ import {
   Scan,
   ShieldAlert,
   TrendingUp,
+  Wrench,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/reui/badge";
@@ -70,6 +72,13 @@ const REUI_STATUS_VARIANT: Record<RepairStatus, "destructive" | "warning" | "inf
   scheduled: "warning",
   in_progress: "info",
   repaired: "success",
+};
+
+const REPAIR_STATUS_ICON: Record<RepairStatus, React.ComponentType<{ className?: string }>> = {
+  pending: Clock,
+  scheduled: CalendarClock,
+  in_progress: Wrench,
+  repaired: CheckCircle2,
 };
 
 const shortDate = (iso: string) => {
@@ -350,24 +359,27 @@ export const AnomalyDetail: React.FC<AnomalyDetailProps> = ({
         <motion.section {...(reduceMotion ? {} : rise(0.1))} className="space-y-2 rounded-xl border bg-background p-3 elev-1 dark:border-input dark:bg-input/30">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-foreground">Estado de Despacho Municipal</span>
-            <span className="text-[11px] text-muted-foreground">{SEVERITY_LABEL[severity]}</span>
           </div>
           <div className="grid grid-cols-2 gap-1.5">
             {REPAIR_STATUS_OPTIONS.map((opt) => {
               const active = row.repair_status === opt.value;
+              const StatusIcon = REPAIR_STATUS_ICON[opt.value];
               return (
                 <button
                   key={opt.value}
                   type="button"
                   onClick={() => onUpdateStatus(row.id, opt.value)}
                   className={cn(
-                    "flex cursor-pointer items-center justify-between rounded-lg border px-2.5 py-1.5 text-left text-[11px] font-medium transition-colors",
+                    "flex cursor-pointer items-center justify-between gap-1.5 rounded-lg border px-2.5 py-1.5 text-left text-[11px] font-medium transition-colors",
                     active
                       ? "border-primary bg-primary/10 text-primary elev-1"
                       : "border-border bg-background text-muted-foreground elev-1 hover:bg-accent hover:text-accent-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
                   )}
                 >
-                  <span className="truncate">{opt.label}</span>
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <StatusIcon className="size-3.5 shrink-0" />
+                    <span className="truncate">{opt.label}</span>
+                  </span>
                   {active && <CheckCircle2 className="size-3 shrink-0" />}
                 </button>
               );
