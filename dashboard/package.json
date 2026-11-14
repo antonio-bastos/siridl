@@ -4,7 +4,8 @@
   "private": true,
   "description": "SIRI-DL — Sistema Inteligente de Reconhecimento de Infraestruturas (Deep Learning) GIS Dashboard",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -H 0.0.0.0",
+    "dev:https": "next dev --experimental-https -H 0.0.0.0",
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit"

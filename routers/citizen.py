@@ -19,6 +19,18 @@ import numpy as np
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 
 from predict import PersistentModelManager, PotholePredictor, resolve_model
+from services.r2_storage import upload_object
+from services.spatial_enrichment import enrich_anomaly_location
+from services.supabase_db import get_database_url, register_media_asset
+from spatial_vision import (
+    HomographyAreaEstimator,
+    TrackDeduplicator,
+    apply_spatial_priority_boost,
+    check_image_quality_gate,
+    compute_roi_sharpness,
+    severity_from_area_cm2,
+    snap_to_road_network,
+)
 
 try:  # Optional PostgreSQL/PostGIS driver
     import psycopg
@@ -148,6 +160,36 @@ def _haversine_meters(lat1: float, lng1: float, lat2: float, lng2: float) -> flo
     return 2.0 * earth_radius_m * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
 
 
+def _store_evidence_image_r2(
+    frame_bgr: np.ndarray,
+    filename: str,
+    quality: int = 90,
+) -> dict[str, Any]:
+    """Encode frame as JPEG and upload directly to Cloudflare R2 (no binary stored in Postgres)."""
+    ok, encoded = cv2.imencode(".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    if not ok:
+        return {"image_key": None, "image_url": f"/api/media/uploads/citizen/{filename}", "asset_meta": None}
+    object_key = f"uploads/citizen/{filename}"
+    res = upload_object(
+        object_key=object_key,
+        body=encoded.tobytes(),
+        content_type="image/jpeg",
+    )
+    if res.get("ok"):
+        return {
+            "image_key": object_key,
+            "image_url": str(res["public_url"]),
+            "asset_meta": res,
+        }
+    # Local fallback only if R2 is unreachable
+    cv2.imwrite(str(UPLOAD_ROOT / filename), frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    return {
+        "image_key": object_key,
+        "image_url": f"/uploads/citizen/{filename}",
+        "asset_meta": None,
+    }
+
+
 def _persist_anomaly_postgis(
     *,
     anomaly_type: str,
@@ -160,35 +202,40 @@ def _persist_anomaly_postgis(
     bbox: dict[str, Any],
     description: Optional[str],
     source: str,
+    estimated_area_cm2: float = 0.0,
+    sharpness_score: float = 0.0,
+    frames_tracked: int = 1,
+    asset_meta: Optional[dict[str, Any]] = None,
 ) -> Optional[dict[str, Any]]:
-    database_url = os.getenv("DATABASE_URL")
+    database_url = get_database_url()
     if not database_url or psycopg is None:
         return None
 
-    with psycopg.connect(database_url, row_factory=dict_row) as conn:
+    with psycopg.connect(database_url, row_factory=dict_row, sslmode="require") as conn:
         with conn.cursor() as cur:
-            # 1. Snap citizen GPS coordinates to the nearest street centerline if available.
-            cur.execute(
-                """
-                SELECT
-                    street_name,
-                    ST_Y(ST_ClosestPoint(geom, ST_SetSRID(ST_MakePoint(%(lng)s, %(lat)s), 4326))) AS snapped_lat,
-                    ST_X(ST_ClosestPoint(geom, ST_SetSRID(ST_MakePoint(%(lng)s, %(lat)s), 4326))) AS snapped_lng
-                FROM road_centerlines
-                WHERE ST_DWithin(
-                    geom::geography,
-                    ST_SetSRID(ST_MakePoint(%(lng)s, %(lat)s), 4326)::geography,
-                    35.0
-                )
-                ORDER BY geom <-> ST_SetSRID(ST_MakePoint(%(lng)s, %(lat)s), 4326)
-                LIMIT 1;
-                """,
-                {"lat": lat, "lng": lng},
+            # 1. Map-match raw GPS onto nearest OSM road centerline via ST_ClosestPoint.
+            road_match = snap_to_road_network(lat, lng, cur=cur)
+            final_lat = float(road_match["lat"])
+            final_lng = float(road_match["lng"])
+            street_name = str(road_match["street_name"])
+            parish = str(road_match["parish"])
+            road_class = str(road_match["road_class"])
+            snap_distance_m = float(road_match["snap_distance_m"])
+
+            # 1a. CAOP 2025 parish tagging (ST_Contains) + IP Rede Rodoviária jurisdiction (ST_DWithin 15m).
+            enrichment = enrich_anomaly_location(cur, final_lat, final_lng)
+            if enrichment.get("freguesia"):
+                parish = str(enrichment["freguesia"])
+
+            # 1b. Apply 100 m spatial buffer priority boost (schools, hospitals, roundabouts, crosswalks).
+            priority_info = apply_spatial_priority_boost(
+                base_severity=severity,
+                lat=final_lat,
+                lng=final_lng,
+                cur=cur,
             )
-            snapped = cur.fetchone()
-            final_lat = float(snapped["snapped_lat"]) if snapped else lat
-            final_lng = float(snapped["snapped_lng"]) if snapped else lng
-            street_name = snapped["street_name"] if snapped else "Via Municipal (Loulé)"
+            final_severity = priority_info["severity"]
+            nearby_poi = priority_info["nearby_poi"]
 
             # 2. Deduplicate within 3 meters using PostGIS geography distance.
             cur.execute(
@@ -210,25 +257,64 @@ def _persist_anomaly_postgis(
             )
             existing = cur.fetchone()
 
+            asset_id: Optional[str] = None
+            if asset_meta and asset_meta.get("ok"):
+                asset_id = register_media_asset(
+                    cur,
+                    bucket=str(asset_meta["bucket"]),
+                    object_key=str(asset_meta["object_key"]),
+                    public_url=str(asset_meta["public_url"]),
+                    mime_type=str(asset_meta["mime_type"]),
+                    file_size=int(asset_meta["file_size"]),
+                    sha256=asset_meta.get("sha256"),
+                    entity_type="anomaly_evidence",
+                    entity_id=None,
+                )
+
             if existing:
                 cur.execute(
                     """
-                    UPDATE road_anomalies
+                    UPDATE public.road_anomalies
                     SET
                         times_detected = times_detected + 1,
-                        evidence_photos = evidence_photos || %(photo_json)s::jsonb,
+                        frames_tracked = GREATEST(frames_tracked, %(frames_tracked)s),
                         confidence = GREATEST(confidence, %(confidence)s),
+                        estimated_area_cm2 = GREATEST(estimated_area_cm2, %(estimated_area_cm2)s),
+                        sharpness_score = GREATEST(sharpness_score, %(sharpness_score)s),
+                        severity = %(severity)s,
+                        base_severity = COALESCE(base_severity, %(base_severity)s),
+                        proximity_boost = proximity_boost OR %(proximity_boost)s,
+                        nearby_poi_name = COALESCE(nearby_poi_name, %(nearby_poi_name)s),
+                        nearby_poi_type = COALESCE(nearby_poi_type, %(nearby_poi_type)s),
+                        nearby_poi_distance_m = COALESCE(nearby_poi_distance_m, %(nearby_poi_distance_m)s),
                         updated_at = NOW()
                     WHERE id = %(id)s
                     RETURNING id, anomaly_code, times_detected, street_name;
                     """,
                     {
                         "id": existing["id"],
-                        "photo_json": json.dumps([image_rel_path]),
+                        "frames_tracked": frames_tracked,
                         "confidence": confidence,
+                        "estimated_area_cm2": estimated_area_cm2,
+                        "sharpness_score": sharpness_score,
+                        "severity": final_severity,
+                        "base_severity": priority_info["base_severity"],
+                        "proximity_boost": priority_info["proximity_boost"],
+                        "nearby_poi_name": nearby_poi["name"] if nearby_poi else None,
+                        "nearby_poi_type": nearby_poi["label_pt"] if nearby_poi else None,
+                        "nearby_poi_distance_m": nearby_poi["distance_m"] if nearby_poi else None,
                     },
                 )
                 updated = cur.fetchone()
+                if asset_id:
+                    cur.execute(
+                        """
+                        INSERT INTO public.anomaly_evidence (anomaly_id, asset_id, is_primary)
+                        VALUES (%(anomaly_id)s, %(asset_id)s::uuid, FALSE)
+                        ON CONFLICT (anomaly_id, asset_id) DO NOTHING;
+                        """,
+                        {"anomaly_id": existing["id"], "asset_id": asset_id},
+                    )
                 conn.commit()
                 return {
                     "storage": "postgis",
@@ -236,44 +322,105 @@ def _persist_anomaly_postgis(
                     "anomaly_id": updated["anomaly_code"],
                     "times_detected": updated["times_detected"],
                     "street_name": updated["street_name"] or street_name,
+                    "parish": parish,
+                    "freguesia": parish,
+                    "roadnumber": enrichment.get("roadnumber"),
+                    "categoria": enrichment.get("categoria"),
+                    "n_vias": enrichment.get("n_vias"),
+                    "gestao": enrichment.get("gestao"),
+                    "sla_exempt": bool(enrichment.get("sla_exempt", False)),
+                    "road_class": road_class,
+                    "snapped": bool(road_match["snapped"]),
+                    "snap_distance_m": snap_distance_m,
+                    "raw_lat": lat,
+                    "raw_lng": lng,
                     "lat": final_lat,
                     "lng": final_lng,
+                    "severity": final_severity,
+                    "base_severity": priority_info["base_severity"],
+                    "proximity_boost": priority_info["proximity_boost"],
+                    "nearby_poi": nearby_poi,
+                    "estimated_area_cm2": estimated_area_cm2,
+                    "sharpness_score": sharpness_score,
+                    "frames_tracked": frames_tracked,
                 }
 
             anomaly_code = f"CID-{uuid.uuid4().hex[:6].upper()}"
             cur.execute(
                 """
-                INSERT INTO road_anomalies (
+                INSERT INTO public.road_anomalies (
                     anomaly_code,
                     anomaly_type,
+                    title,
                     confidence,
                     coverage_pct,
+                    estimated_area_cm2,
+                    sharpness_score,
+                    base_severity,
                     severity,
+                    proximity_boost,
+                    nearby_poi_name,
+                    nearby_poi_type,
+                    nearby_poi_distance_m,
                     source,
                     review_status,
+                    repair_status,
                     description,
                     street_name,
-                    image_path,
-                    evidence_photos,
+                    parish,
+                    road_class,
+                    roadnumber,
+                    categoria,
+                    gestao,
+                    n_vias,
+                    sla_exempt,
+                    snap_distance_m,
+                    raw_lat,
+                    raw_lng,
+                    primary_asset_id,
+                    image_key,
+                    image_url,
                     bbox,
                     times_detected,
+                    frames_tracked,
                     lat,
                     lng,
                     geom
                 ) VALUES (
                     %(anomaly_code)s,
                     %(anomaly_type)s,
+                    %(title)s,
                     %(confidence)s,
                     %(coverage_pct)s,
+                    %(estimated_area_cm2)s,
+                    %(sharpness_score)s,
+                    %(base_severity)s,
                     %(severity)s,
+                    %(proximity_boost)s,
+                    %(nearby_poi_name)s,
+                    %(nearby_poi_type)s,
+                    %(nearby_poi_distance_m)s,
                     %(source)s,
                     'pending_human_review',
+                    'Pendente',
                     %(description)s,
                     %(street_name)s,
-                    %(image_path)s,
-                    %(evidence_photos)s::jsonb,
+                    %(parish)s,
+                    %(road_class)s,
+                    %(roadnumber)s,
+                    %(categoria)s,
+                    %(gestao)s,
+                    %(n_vias)s,
+                    %(sla_exempt)s,
+                    %(snap_distance_m)s,
+                    %(raw_lat)s,
+                    %(raw_lng)s,
+                    %(primary_asset_id)s::uuid,
+                    %(image_key)s,
+                    %(image_url)s,
                     %(bbox)s::jsonb,
                     1,
+                    %(frames_tracked)s,
                     %(lat)s,
                     %(lng)s,
                     ST_SetSRID(ST_MakePoint(%(lng)s, %(lat)s), 4326)::geography
@@ -283,20 +430,49 @@ def _persist_anomaly_postgis(
                 {
                     "anomaly_code": anomaly_code,
                     "anomaly_type": anomaly_type,
+                    "title": f"{anomaly_type} · {street_name}",
                     "confidence": confidence,
                     "coverage_pct": coverage_pct,
-                    "severity": severity,
+                    "estimated_area_cm2": estimated_area_cm2,
+                    "sharpness_score": sharpness_score,
+                    "base_severity": priority_info["base_severity"],
+                    "severity": final_severity,
+                    "proximity_boost": priority_info["proximity_boost"],
+                    "nearby_poi_name": nearby_poi["name"] if nearby_poi else None,
+                    "nearby_poi_type": nearby_poi["label_pt"] if nearby_poi else None,
+                    "nearby_poi_distance_m": nearby_poi["distance_m"] if nearby_poi else None,
                     "source": source,
                     "description": description,
                     "street_name": street_name,
-                    "image_path": image_rel_path,
-                    "evidence_photos": json.dumps([image_rel_path]),
+                    "parish": parish,
+                    "road_class": road_class,
+                    "roadnumber": enrichment.get("roadnumber"),
+                    "categoria": enrichment.get("categoria"),
+                    "gestao": enrichment.get("gestao") or "Câmara Municipal de Loulé",
+                    "n_vias": enrichment.get("n_vias"),
+                    "sla_exempt": bool(enrichment.get("sla_exempt", False)),
+                    "snap_distance_m": snap_distance_m,
+                    "raw_lat": lat,
+                    "raw_lng": lng,
+                    "primary_asset_id": asset_id,
+                    "image_key": (asset_meta or {}).get("object_key"),
+                    "image_url": image_rel_path,
                     "bbox": json.dumps(bbox),
+                    "frames_tracked": frames_tracked,
                     "lat": final_lat,
                     "lng": final_lng,
                 },
             )
             inserted = cur.fetchone()
+            if asset_id:
+                cur.execute(
+                    """
+                    INSERT INTO public.anomaly_evidence (anomaly_id, asset_id, is_primary)
+                    VALUES (%(anomaly_id)s, %(asset_id)s::uuid, TRUE)
+                    ON CONFLICT (anomaly_id, asset_id) DO NOTHING;
+                    """,
+                    {"anomaly_id": inserted["id"], "asset_id": asset_id},
+                )
             conn.commit()
             return {
                 "storage": "postgis",
@@ -304,8 +480,27 @@ def _persist_anomaly_postgis(
                 "anomaly_id": inserted["anomaly_code"],
                 "times_detected": 1,
                 "street_name": street_name,
+                "parish": parish,
+                "freguesia": parish,
+                "roadnumber": enrichment.get("roadnumber"),
+                "categoria": enrichment.get("categoria"),
+                "n_vias": enrichment.get("n_vias"),
+                "gestao": enrichment.get("gestao"),
+                "sla_exempt": bool(enrichment.get("sla_exempt", False)),
+                "road_class": road_class,
+                "snapped": bool(road_match["snapped"]),
+                "snap_distance_m": snap_distance_m,
+                "raw_lat": lat,
+                "raw_lng": lng,
                 "lat": final_lat,
                 "lng": final_lng,
+                "severity": final_severity,
+                "base_severity": priority_info["base_severity"],
+                "proximity_boost": priority_info["proximity_boost"],
+                "nearby_poi": nearby_poi,
+                "estimated_area_cm2": estimated_area_cm2,
+                "sharpness_score": sharpness_score,
+                "frames_tracked": frames_tracked,
             }
 
 
@@ -321,8 +516,32 @@ def _persist_anomaly_local(
     bbox: dict[str, Any],
     description: Optional[str],
     source: str,
+    estimated_area_cm2: float = 0.0,
+    sharpness_score: float = 0.0,
+    frames_tracked: int = 1,
 ) -> dict[str, Any]:
-    """Local JSON fallback with 3m Haversine deduplication when PostGIS is not configured."""
+    """Local JSON fallback with road map-matching, 3m deduplication & 100m buffer priority boost."""
+    road_match = snap_to_road_network(lat, lng, cur=None)
+    final_lat = float(road_match["lat"])
+    final_lng = float(road_match["lng"])
+    street_name = str(road_match["street_name"])
+    parish = str(road_match["parish"])
+    road_class = str(road_match["road_class"])
+    snap_distance_m = float(road_match["snap_distance_m"])
+
+    enrichment = enrich_anomaly_location(None, final_lat, final_lng)
+    if enrichment.get("freguesia"):
+        parish = str(enrichment["freguesia"])
+
+    priority_info = apply_spatial_priority_boost(
+        base_severity=severity,
+        lat=final_lat,
+        lng=final_lng,
+        cur=None,
+    )
+    final_severity = priority_info["severity"]
+    nearby_poi = priority_info["nearby_poi"]
+
     with LOCAL_STORE_LOCK:
         records: list[dict[str, Any]] = []
         if LOCAL_STORE_PATH.exists():
@@ -332,12 +551,24 @@ def _persist_anomaly_local(
                 records = []
 
         for item in records:
-            dist = _haversine_meters(lat, lng, float(item["lat"]), float(item["lng"]))
+            dist = _haversine_meters(final_lat, final_lng, float(item["lat"]), float(item["lng"]))
             if dist <= DEDUP_RADIUS_METERS:
                 item["times_detected"] = int(item.get("times_detected", 1)) + 1
                 photos = item.setdefault("evidence_photos", [])
                 photos.append(image_rel_path)
                 item["confidence"] = max(float(item.get("confidence", 0.0)), confidence)
+                item["estimated_area_cm2"] = max(
+                    float(item.get("estimated_area_cm2", 0.0)),
+                    estimated_area_cm2,
+                )
+                item["sharpness_score"] = max(
+                    float(item.get("sharpness_score", 0.0)),
+                    sharpness_score,
+                )
+                item["severity"] = final_severity
+                item["base_severity"] = priority_info["base_severity"]
+                item["proximity_boost"] = priority_info["proximity_boost"]
+                item["nearby_poi"] = nearby_poi
                 item["updated_at"] = datetime.now(timezone.utc).isoformat()
                 LOCAL_STORE_PATH.write_text(
                     json.dumps(records, ensure_ascii=False, indent=2),
@@ -348,29 +579,59 @@ def _persist_anomaly_local(
                     "deduplicated": True,
                     "anomaly_id": item["anomaly_code"],
                     "times_detected": item["times_detected"],
-                    "street_name": item.get("street_name", "Via Municipal (Loulé)"),
+                    "street_name": item.get("street_name", street_name),
+                    "parish": item.get("parish", parish),
+                    "road_class": item.get("road_class", road_class),
+                    "snapped": bool(road_match["snapped"]),
+                    "snap_distance_m": snap_distance_m,
+                    "raw_lat": lat,
+                    "raw_lng": lng,
                     "lat": float(item["lat"]),
                     "lng": float(item["lng"]),
+                    "severity": final_severity,
+                    "base_severity": priority_info["base_severity"],
+                    "proximity_boost": priority_info["proximity_boost"],
+                    "nearby_poi": nearby_poi,
+                    "estimated_area_cm2": item["estimated_area_cm2"],
+                    "sharpness_score": item["sharpness_score"],
+                    "frames_tracked": frames_tracked,
                 }
 
         anomaly_code = f"CID-{uuid.uuid4().hex[:6].upper()}"
-        street_name = "Via Municipal (Loulé)"
         new_item = {
             "anomaly_code": anomaly_code,
             "anomaly_type": anomaly_type,
             "confidence": round(confidence, 4),
             "coverage_pct": round(coverage_pct, 3),
-            "severity": severity,
+            "estimated_area_cm2": round(estimated_area_cm2, 1),
+            "sharpness_score": round(sharpness_score, 3),
+            "base_severity": priority_info["base_severity"],
+            "severity": final_severity,
+            "proximity_boost": priority_info["proximity_boost"],
+            "nearby_poi": nearby_poi,
             "source": source,
             "review_status": "pending_human_review",
             "description": description,
             "street_name": street_name,
+            "parish": parish,
+            "freguesia": parish,
+            "roadnumber": enrichment.get("roadnumber"),
+            "categoria": enrichment.get("categoria"),
+            "n_vias": enrichment.get("n_vias"),
+            "gestao": enrichment.get("gestao"),
+            "sla_exempt": bool(enrichment.get("sla_exempt", False)),
+            "road_class": road_class,
+            "snapped": bool(road_match["snapped"]),
+            "snap_distance_m": snap_distance_m,
+            "raw_lat": lat,
+            "raw_lng": lng,
             "image_path": image_rel_path,
             "evidence_photos": [image_rel_path],
             "bbox": bbox,
             "times_detected": 1,
-            "lat": lat,
-            "lng": lng,
+            "frames_tracked": frames_tracked,
+            "lat": final_lat,
+            "lng": final_lng,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         records.append(new_item)
@@ -384,8 +645,27 @@ def _persist_anomaly_local(
             "anomaly_id": anomaly_code,
             "times_detected": 1,
             "street_name": street_name,
-            "lat": lat,
-            "lng": lng,
+            "parish": parish,
+            "freguesia": parish,
+            "roadnumber": enrichment.get("roadnumber"),
+            "categoria": enrichment.get("categoria"),
+            "n_vias": enrichment.get("n_vias"),
+            "gestao": enrichment.get("gestao"),
+            "sla_exempt": bool(enrichment.get("sla_exempt", False)),
+            "road_class": road_class,
+            "snapped": bool(road_match["snapped"]),
+            "snap_distance_m": snap_distance_m,
+            "raw_lat": lat,
+            "raw_lng": lng,
+            "lat": final_lat,
+            "lng": final_lng,
+            "severity": final_severity,
+            "base_severity": priority_info["base_severity"],
+            "proximity_boost": priority_info["proximity_boost"],
+            "nearby_poi": nearby_poi,
+            "estimated_area_cm2": round(estimated_area_cm2, 1),
+            "sharpness_score": round(sharpness_score, 3),
+            "frames_tracked": frames_tracked,
         }
 
 
@@ -394,6 +674,18 @@ def _persist_anomaly(**kwargs: Any) -> dict[str, Any]:
     if postgis_result is not None:
         return postgis_result
     return _persist_anomaly_local(**kwargs)
+
+
+def _resize_aspect_fit(image_bgr: np.ndarray, max_dim: int = 1280) -> np.ndarray:
+    """Downscale large uploads preserving aspect ratio so max(h, w) <= max_dim."""
+    h, w = image_bgr.shape[:2]
+    longest = max(h, w)
+    if longest <= max_dim:
+        return image_bgr
+    scale = max_dim / float(longest)
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+    return cv2.resize(image_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
 
 @router.post("/report-photo")
@@ -416,6 +708,19 @@ async def report_photo(
     if frame_bgr is None:
         raise HTTPException(status_code=400, detail="Formato de imagem não suportado.")
 
+    frame_bgr = _resize_aspect_fit(frame_bgr, max_dim=1280)
+
+    quality_gate = check_image_quality_gate(frame_bgr)
+    if not quality_gate["accepted"]:
+        return {
+            "status": "rejected_by_quality_gate",
+            "reason": quality_gate["reason"],
+            "message": quality_gate["message_pt"],
+            "quality_gate": quality_gate,
+            "max_confidence": 0.0,
+            "detections": [],
+        }
+
     predictor = _get_predictor()
     records, _, _ = predictor.predict(frame_bgr, save=False)
     detections = records[0]["detections"] if records else []
@@ -435,49 +740,75 @@ async def report_photo(
 
     best_det = max(detections, key=lambda d: float(d["confidence"]))
     coverage_pct = float(best_det.get("area_pct", 0.0))
-    severity = _severity_from_coverage(coverage_pct)
+    bbox = {
+        "x1": best_det["x1"],
+        "y1": best_det["y1"],
+        "x2": best_det["x2"],
+        "y2": best_det["y2"],
+    }
+    h_img, w_img = frame_bgr.shape[:2]
+    estimated_area_cm2 = HomographyAreaEstimator.estimate_bbox_area_cm2(
+        bbox, w_img, h_img, coverage_pct
+    )
+    sharpness_score = compute_roi_sharpness(frame_bgr, bbox)
+    base_severity = severity_from_area_cm2(estimated_area_cm2, coverage_pct)
     anomaly_type = _resolve_anomaly_label(category)
 
     sanitized_bgr = _blur_privacy_regions(frame_bgr)
     photo_filename = f"citizen_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
-    photo_path = UPLOAD_ROOT / photo_filename
-    cv2.imwrite(str(photo_path), sanitized_bgr, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    stored_img = _store_evidence_image_r2(sanitized_bgr, photo_filename, quality=90)
 
     persisted = _persist_anomaly(
         anomaly_type=anomaly_type,
         confidence=float(best_det["confidence"]),
         coverage_pct=coverage_pct,
-        severity=severity,
+        severity=base_severity,
         lat=lat,
         lng=lng,
-        image_rel_path=f"/uploads/citizen/{photo_filename}",
-        bbox={
-            "x1": best_det["x1"],
-            "y1": best_det["y1"],
-            "x2": best_det["x2"],
-            "y2": best_det["y2"],
-        },
+        image_rel_path=str(stored_img["image_url"]),
+        bbox=bbox,
         description=description,
         source="citizen_eu_participo",
+        estimated_area_cm2=estimated_area_cm2,
+        sharpness_score=sharpness_score,
+        asset_meta=stored_img.get("asset_meta"),
     )
+
+    final_severity = persisted.get("severity", base_severity)
+    poi_note = ""
+    if persisted.get("proximity_boost") and persisted.get("nearby_poi"):
+        poi = persisted["nearby_poi"]
+        poi_note = f" • Prioridade agravada ({poi['label_pt']} a {poi['distance_m']} m)"
 
     return {
         "status": "accepted",
         "message": (
             f"Anomalia confirmada: {anomaly_type} "
             f"({float(best_det['confidence']) * 100:.0f}% confiança) • "
-            f"Gravidade {severity} • Registado em {persisted['street_name']}"
+            f"~{estimated_area_cm2:.0f} cm² • Gravidade {final_severity}"
+            f"{poi_note} • Registado em {persisted['street_name']}"
         ),
         "anomaly_id": persisted["anomaly_id"],
         "anomaly_type": anomaly_type,
         "confidence": round(float(best_det["confidence"]), 4),
         "coverage_pct": round(coverage_pct, 3),
-        "severity": severity,
+        "estimated_area_cm2": estimated_area_cm2,
+        "sharpness_score": sharpness_score,
+        "base_severity": persisted.get("base_severity", base_severity),
+        "severity": final_severity,
+        "proximity_boost": bool(persisted.get("proximity_boost", False)),
+        "nearby_poi": persisted.get("nearby_poi"),
         "review_status": "pending_human_review",
         "source": "citizen_eu_participo",
         "deduplicated": persisted["deduplicated"],
         "times_detected": persisted["times_detected"],
         "street_name": persisted["street_name"],
+        "parish": persisted.get("parish", "Loulé"),
+        "road_class": persisted.get("road_class", "Rua Local"),
+        "snapped": bool(persisted.get("snapped", False)),
+        "snap_distance_m": persisted.get("snap_distance_m", 0.0),
+        "raw_lat": persisted.get("raw_lat", lat),
+        "raw_lng": persisted.get("raw_lng", lng),
         "lat": persisted["lat"],
         "lng": persisted["lng"],
         "image_url": f"/uploads/citizen/{photo_filename}",
@@ -605,9 +936,10 @@ def _process_video_job(
         creation_time = _extract_video_creation_time(video_path)
         predictor = _get_predictor()
 
-        tracked_clusters: dict[int, dict[str, Any]] = {}
+        deduplicator = TrackDeduplicator()
         frames_sampled = 0
         frames_skipped_stationary = 0
+        frames_skipped_quality = 0
         frame_idx = 0
 
         while True:
@@ -620,11 +952,18 @@ def _process_video_job(
                 continue
 
             frames_sampled += 1
-            frame_time = creation_time + timedelta(seconds=frame_idx / fps)
+            timestamp_s = frame_idx / fps
+            frame_time = creation_time + timedelta(seconds=timestamp_s)
             lat, lng, speed_kmh = _interpolate_gpx(gpx_points, frame_time)
 
             if gpx_points and speed_kmh < MIN_VIDEO_SPEED_KMH:
                 frames_skipped_stationary += 1
+                frame_idx += 1
+                continue
+
+            quality_gate = check_image_quality_gate(frame_bgr)
+            if not quality_gate["accepted"]:
+                frames_skipped_quality += 1
                 frame_idx += 1
                 continue
 
@@ -651,38 +990,53 @@ def _process_video_job(
 
                 for tid, coords, conf_val in zip(id_list, xyxy_list, conf_list):
                     x1, y1, x2, y2 = coords
+                    bbox = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
                     coverage_pct = ((x2 - x1) * (y2 - y1) / frame_area) * 100.0
-                    existing = tracked_clusters.get(int(tid))
-                    if existing is None or float(conf_val) > existing["confidence"]:
-                        tracked_clusters[int(tid)] = {
-                            "track_id": int(tid),
-                            "confidence": float(conf_val),
-                            "coverage_pct": coverage_pct,
-                            "lat": lat,
-                            "lng": lng,
-                            "bbox": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
-                            "frame": frame_bgr.copy(),
-                        }
+                    area_cm2 = HomographyAreaEstimator.estimate_bbox_area_cm2(
+                        bbox, w, h, coverage_pct
+                    )
+                    deduplicator.update_track(
+                        int(tid),
+                        frame_bgr=frame_bgr,
+                        bbox=bbox,
+                        confidence=float(conf_val),
+                        area_pct=coverage_pct,
+                        area_cm2=area_cm2,
+                        lat=lat,
+                        lng=lng,
+                        timestamp_s=timestamp_s,
+                    )
 
             frame_idx += 1
 
         persisted_ids: list[str] = []
-        for tid, cluster in tracked_clusters.items():
+        for cluster in deduplicator.flush_all(min_frames=1):
+            tid = cluster["track_id"]
             sanitized = _blur_privacy_regions(cluster["frame"])
             filename = f"video_{job_id}_track_{tid}.jpg"
-            out_path = UPLOAD_ROOT / filename
-            cv2.imwrite(str(out_path), sanitized, [cv2.IMWRITE_JPEG_QUALITY, 88])
+            stored_img = _store_evidence_image_r2(sanitized, filename, quality=88)
+            base_sev = severity_from_area_cm2(
+                cluster["area_cm2"],
+                cluster["coverage_pct"],
+            )
             saved = _persist_anomaly(
                 anomaly_type="Buraco no Pavimento",
                 confidence=cluster["confidence"],
                 coverage_pct=cluster["coverage_pct"],
-                severity=_severity_from_coverage(cluster["coverage_pct"]),
+                severity=base_sev,
                 lat=cluster["lat"],
                 lng=cluster["lng"],
-                image_rel_path=f"/uploads/citizen/{filename}",
+                image_rel_path=str(stored_img["image_url"]),
                 bbox=cluster["bbox"],
-                description=f"Deteção automática em vídeo de percurso (Track #{tid}).",
+                description=(
+                    f"Deteção automática em vídeo de percurso "
+                    f"(Track #{tid} • {cluster['frames_seen']} fotogramas analisados)."
+                ),
                 source="citizen_video_audit",
+                estimated_area_cm2=cluster["area_cm2"],
+                sharpness_score=cluster["sharpness"],
+                frames_tracked=cluster["frames_seen"],
+                asset_meta=stored_img.get("asset_meta"),
             )
             persisted_ids.append(saved["anomaly_id"])
 
@@ -692,6 +1046,7 @@ def _process_video_job(
                     "status": "completed",
                     "frames_sampled": frames_sampled,
                     "frames_skipped_stationary": frames_skipped_stationary,
+                    "frames_skipped_quality": frames_skipped_quality,
                     "unique_anomalies": len(persisted_ids),
                     "anomaly_ids": persisted_ids,
                 }

@@ -9,8 +9,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from routers.active_learning import router as active_learning_router
 from routers.citizen import router as citizen_router
 from routers.stream import router as stream_router
+from routers.tiles import router as tiles_router
 
 app = FastAPI(
     title="SIRI-DL API — Inteligência Viária de Loulé",
@@ -37,6 +39,8 @@ app.mount("/uploads/citizen", StaticFiles(directory=str(upload_dir)), name="citi
 
 app.include_router(citizen_router)
 app.include_router(stream_router)
+app.include_router(active_learning_router)
+app.include_router(tiles_router)
 
 
 @app.get("/health")

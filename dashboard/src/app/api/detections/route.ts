@@ -1,83 +1,69 @@
 ﻿import { NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
+import { listRoadAnomalies } from "@/lib/supabase-server";
 import { SIRI_ANOMALIES } from "@/models/siri-potholes";
-import type { RoadAnomaly } from "@/models/road-anomalies";
+
+const REPAIR_STATUS_MAP: Record<string, "pending" | "scheduled" | "in_progress" | "repaired"> = {
+  Pendente: "pending",
+  Agendado: "scheduled",
+  "Em Reparação": "in_progress",
+  Resolvido: "repaired",
+};
 
 export async function GET() {
-  const extra: RoadAnomaly[] = [];
   try {
-    const localPred = path.join(process.cwd(), "predictions");
-    const parentPred = path.join(process.cwd(), "..", "predictions");
-    const predRoot = fs.existsSync(localPred) ? localPred : parentPred;
-    if (fs.existsSync(predRoot)) {
-      const files: string[] = [];
-      const walk = (dir: string) => {
-        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-          const full = path.join(dir, entry.name);
-          if (entry.isDirectory()) walk(full);
-          else if (entry.name === "detections.json") files.push(full);
-        }
-      };
-      walk(predRoot);
+    const rows = await listRoadAnomalies(300);
+    const anomalies = rows.map((r) => ({
+      id: r.id,
+      reference: r.anomaly_code,
+      source: r.source || "yolov11",
+      title: r.title || `${r.anomaly_type} · ${r.street_name}`,
+      anomaly_type: r.anomaly_type === "Buraco no Pavimento" ? "pothole" : r.anomaly_type,
+      repair_status: REPAIR_STATUS_MAP[r.repair_status] || "pending",
+      detection_count: r.times_detected,
+      patrol_passes: r.times_detected,
+      road_class: r.road_class || "Rua Local",
+      roadnumber: r.roadnumber,
+      categoria: r.categoria,
+      gestao: r.gestao,
+      n_vias: r.n_vias,
+      sla_exempt: r.sla_exempt,
+      cavity_area_cm2: r.estimated_area_cm2,
+      lane_width_cm: 350,
+      district: "Faro",
+      city: "Loulé",
+      locality: r.parish,
+      parish: r.parish,
+      street: r.street_name,
+      latitude: r.lat,
+      longitude: r.lng,
+      patrol_unit: r.patrol_unit || "Viatura Fiscalização #01",
+      patrol_kind: r.patrol_kind || "fleet_patrol",
+      first_seen_at: r.created_at,
+      last_seen_at: r.updated_at || r.created_at,
+      detected_at: r.created_at,
+      confidence: r.confidence,
+      area_pct: r.coverage_pct,
+      severity: r.severity,
+      estimated_area_cm2: r.estimated_area_cm2,
+      depth_cm: r.profundidade_cm ?? 4.5,
+      speed_ms: { preprocess: 1.8, inference: 8.4, postprocess: 1.4 },
+      image_url: r.image_url || "/api/media/assets/reference.jpg",
+      image_width: 1280,
+      image_height: 720,
+      bbox: r.bbox,
+      bboxes: Array.isArray(r.bbox) ? r.bbox : [],
+    }));
 
-      let nextId = 500;
-      for (const file of files) {
-        const raw = JSON.parse(fs.readFileSync(file, "utf8"));
-        const records = Array.isArray(raw) ? raw : [raw];
-        for (const rec of records) {
-          if (!rec.detections?.length) continue;
-          const top = rec.detections[0];
-          const id = nextId++;
-          const areaPct = Number(top.area_pct ?? 1.5);
-          const conf = Number(top.confidence ?? 0.88);
-          extra.push({
-            id,
-            reference: String(id).padStart(5, "0"),
-            source: "yolov11",
-            title: `Deteção YOLOv11 em direto — ${path.basename(rec.image || "frame.jpg")}`,
-            anomaly_type: "pothole",
-            repair_status: "pending",
-            detection_count: rec.detections.length,
-            patrol_passes: 1,
-            road_class: "Urb. Arterial",
-            cavity_area_cm2: Math.round(areaPct * 720),
-            lane_width_cm: 90,
-            district: "Faro",
-            city: "Loulé",
-            locality: "Quarteira",
-            street: "Av. Infante de Sagres (Feed em Direto)",
-            latitude: 37.0697 + ((id % 7) - 3) * 0.0012,
-            longitude: -8.1006 + ((id % 5) - 2) * 0.0014,
-            patrol_unit: "Transmissão YOLOv11 em Direto",
-            patrol_kind: "fleet_patrol",
-            first_seen_at: new Date().toISOString(),
-            last_seen_at: new Date().toISOString(),
-            confidence: conf,
-            area_pct: areaPct,
-            depth_cm: Math.round(areaPct * 2.8 * 10) / 10,
-            speed_ms: rec.speed_ms ?? { preprocess: 2.0, inference: 12.1, postprocess: 1.1 },
-            image_url: "/assets/reference.jpg",
-            image_width: rec.width || 1280,
-            image_height: rec.height || 720,
-            detections: rec.detections,
-            severity_history: [
-              {
-                at: new Date().toISOString(),
-                area_pct: areaPct,
-                confidence: conf,
-              },
-            ],
-          });
-        }
-      }
-    }
+    return NextResponse.json({
+      source: "supabase_postgresql",
+      anomalies,
+      model: "SIRI-DL YOLOv11s (Supabase PostGIS + Cloudflare R2)",
+    });
   } catch {
-    // Fallback cleanly to built-in SIRI_ANOMALIES if predictions folder is locked or malformed
+    return NextResponse.json({
+      source: "fallback_seed",
+      anomalies: SIRI_ANOMALIES,
+      model: "SIRI-DL YOLOv11s (Offline Seed Fallback)",
+    });
   }
-
-  return NextResponse.json({
-    anomalies: [...extra, ...SIRI_ANOMALIES],
-    model: "SIRI-DL YOLOv11s (mAP@50: 0.775 · Precisão: 81.9% · Abrangência: 71.0%)",
-  });
 }

@@ -33,3 +33,4 @@ node_modules/
 .next/
 out/
 .env*.local
+public_data/CAOP_Continente_2025-gpkg/Continente_CAOP2025.gpkg

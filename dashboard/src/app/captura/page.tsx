@@ -22,12 +22,32 @@ import {
   getOfflineQueueCount,
 } from "@/lib/offline-capture-queue";
 
+interface NearbySensitivePoi {
+  name: string;
+  label_pt: string;
+  zone_type: string;
+  distance_m: number;
+}
+
+interface MapMatchedRoad {
+  snapped: boolean;
+  street_name: string;
+  parish: string;
+  road_class: string;
+  snap_distance_m: number;
+}
+
 interface StreamDetection {
   id: string;
+  track_id?: number;
   label: string;
   confidence: number;
   severity: "Baixa" | "Média" | "Crítica";
+  base_severity?: "Baixa" | "Média" | "Crítica";
+  proximity_boost?: boolean;
   area_pct: number;
+  estimated_area_cm2?: number;
+  sharpness_score?: number;
   bbox: {
     norm_x1: number;
     norm_y1: number;
@@ -143,6 +163,9 @@ export default function CapturaAoVivoPage() {
   const [offlineCount, setOfflineCount] = useState(0);
   const [isOnline, setIsOnline] = useState(true);
   const [lastCriticalAlert, setLastCriticalAlert] = useState<string | null>(null);
+  const [nearbyPoi, setNearbyPoi] = useState<NearbySensitivePoi | null>(null);
+  const [mapMatchedRoad, setMapMatchedRoad] = useState<MapMatchedRoad | null>(null);
+  const seenTrackIdsRef = useRef<Set<number>>(new Set());
 
   const samplingFps =
     hudSpeedKmh <= MIN_SPEED_KMH ? 0 : hudSpeedKmh >= HIGH_SPEED_KMH ? 10 : 5;
@@ -180,7 +203,13 @@ export default function CapturaAoVivoPage() {
       ctx.lineWidth = 3;
       ctx.strokeRect(x1, y1, boxW, boxH);
 
-      const tag = `${det.label} • ${(det.confidence * 100).toFixed(0)}% (${det.severity})`;
+      const trackTag = det.track_id !== undefined ? `Track #${det.track_id}` : det.label;
+      const areaTag =
+        det.estimated_area_cm2 !== undefined
+          ? `~${Math.round(det.estimated_area_cm2)} cm²`
+          : `${det.area_pct.toFixed(1)}%`;
+      const boostTag = det.proximity_boost ? " • ⚡ <100m" : "";
+      const tag = `${trackTag} • ${areaTag} • ${(det.confidence * 100).toFixed(0)}% (${det.severity}${boostTag})`;
       ctx.font = "600 13px system-ui, sans-serif";
       const textWidth = ctx.measureText(tag).width;
       const labelY = Math.max(24, y1);
@@ -246,7 +275,15 @@ export default function CapturaAoVivoPage() {
   // Initialize 1x rear camera + continuous focus
   const startCamera = useCallback(async () => {
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-      setCameraError("Este navegador não suporta acesso à câmara (navigator.mediaDevices).");
+      const insecureHttp =
+        typeof window !== "undefined" &&
+        !window.isSecureContext &&
+        window.location.protocol === "http:";
+      setCameraError(
+        insecureHttp
+          ? `O navegador bloqueou a câmara e o GPS porque ${window.location.origin} usa HTTP sem TLS. Abra via HTTPS (npm run dev:https) ou use a captura nativa abaixo.`
+          : "Este navegador não suporta acesso direto à câmara (navigator.mediaDevices).",
+      );
       return;
     }
 
@@ -451,10 +488,26 @@ export default function CapturaAoVivoPage() {
               const detections: StreamDetection[] = Array.isArray(result?.detections)
                 ? result.detections
                 : [];
+              setNearbyPoi(result?.nearby_poi ?? null);
+              setMapMatchedRoad(result?.map_matched ?? null);
               drawOverlayBoxes(detections);
 
+              const newlyLogged = Array.isArray(result?.newly_logged_tracks)
+                ? result.newly_logged_tracks
+                : [];
+              for (const det of detections) {
+                if (typeof det.track_id === "number") {
+                  if (!seenTrackIdsRef.current.has(det.track_id)) {
+                    seenTrackIdsRef.current.add(det.track_id);
+                    setSessionDetections(seenTrackIdsRef.current.size);
+                  }
+                }
+              }
+              if (newlyLogged.length > 0 && seenTrackIdsRef.current.size === 0) {
+                setSessionDetections((prev) => prev + newlyLogged.length);
+              }
+
               if (detections.length > 0) {
-                setSessionDetections((prev) => prev + detections.length);
                 const hasCritical = detections.some((d) => d.severity === "Crítica");
                 if (hasCritical) {
                   playCriticalChime(audioCtxRef);
@@ -509,9 +562,20 @@ export default function CapturaAoVivoPage() {
         await wakeLockRef.current.release();
         wakeLockRef.current = null;
       }
+      try {
+        await fetch("/api/stream/flush", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ device_id: DEVICE_ID }),
+        });
+      } catch {
+        // Ignore flush network failure on audit stop
+      }
       return;
     }
 
+    seenTrackIdsRef.current.clear();
+    setSessionDetections(0);
     isAuditingRef.current = true;
     setIsAuditing(true);
     await acquireWakeLock();
@@ -539,14 +603,66 @@ export default function CapturaAoVivoPage() {
       {cameraError && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-slate-950/90 px-6 text-center">
           <Camera className="h-12 w-12 text-amber-400" />
-          <p className="max-w-md text-base font-medium text-slate-100">{cameraError}</p>
-          <button
-            type="button"
-            onClick={() => void startCamera()}
-            className="rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-500"
-          >
-            Tentar Novamente
-          </button>
+          <p className="max-w-md text-sm leading-relaxed font-medium text-slate-100">
+            {cameraError}
+          </p>
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            {typeof window !== "undefined" &&
+              !window.isSecureContext &&
+              window.location.protocol === "http:" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.location.href = window.location.href.replace(/^http:/i, "https:");
+                  }}
+                  className="rounded-xl bg-sky-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-sky-500"
+                >
+                  Abrir em HTTPS
+                </button>
+              )}
+            <label className="cursor-pointer rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-500">
+              Capturar Foto (Câmara Nativa)
+              <input
+                type="file"
+                accept="image/*"
+                capture="environment"
+                className="sr-only"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  try {
+                    const telemetryJson = JSON.stringify({
+                      latitude: telemetryRef.current.latitude,
+                      longitude: telemetryRef.current.longitude,
+                      accuracy_m: telemetryRef.current.accuracy,
+                      speed_kmh: telemetryRef.current.speedKmh,
+                      timestamp: new Date().toISOString(),
+                      device_id: "mobile-native-fallback",
+                    });
+                    const payload = await sendFramePayload(file, telemetryJson);
+                    const count = Array.isArray(payload.detections) ? payload.detections.length : 0;
+                    if (count > 0) {
+                      setSessionDetections((c) => c + count);
+                    }
+                    setCameraError(
+                      payload.status === "quality_rejected"
+                        ? String(payload.message ?? "Fotograma rejeitado pelo controlo de qualidade.")
+                        : `Análise concluída: ${count} deteção(ões) registada(s).`,
+                    );
+                  } catch {
+                    setCameraError("Não foi possível enviar a fotografia para /api/stream/detect.");
+                  }
+                }}
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => void startCamera()}
+              className="rounded-xl border border-white/25 bg-white/10 px-5 py-2.5 text-sm font-semibold text-white hover:bg-white/20"
+            >
+              Tentar Novamente
+            </button>
+          </div>
         </div>
       )}
 
@@ -555,13 +671,17 @@ export default function CapturaAoVivoPage() {
         <div className="flex flex-wrap items-center gap-2">
           {/* GPS Lock Pill */}
           <div
-            className={`inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-sm font-semibold backdrop-blur-md ${
+            className={`inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-sm font-semibold shadow-sm backdrop-blur-md ${
               hudHasFix
-                ? "border-emerald-400/50 bg-emerald-950/80 text-emerald-300"
-                : "border-amber-400/50 bg-amber-950/80 text-amber-300"
+                ? "border-emerald-300 bg-emerald-50/95 text-emerald-800"
+                : "border-amber-300 bg-amber-50/95 text-amber-800"
             }`}
           >
-            <Satellite className="h-4 w-4" />
+            <Satellite
+              className={`h-4 w-4 ${
+                hudHasFix ? "text-emerald-600" : "text-amber-600"
+              }`}
+            />
             <span>
               {hudHasFix && hudAccuracyM !== null
                 ? `GPS ±${hudAccuracyM}m`
@@ -570,26 +690,30 @@ export default function CapturaAoVivoPage() {
           </div>
 
           {/* Speed Pill */}
-          <div className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-slate-900/85 px-3.5 py-1.5 text-sm font-bold tabular-nums text-white backdrop-blur-md">
-            <Gauge className="h-4 w-4 text-sky-400" />
+          <div className="inline-flex items-center gap-2 rounded-full border border-slate-200/90 bg-white/95 px-3.5 py-1.5 text-sm font-bold tabular-nums text-slate-900 shadow-sm backdrop-blur-md">
+            <Gauge className="h-4 w-4 text-sky-600" />
             <span>{Math.round(hudSpeedKmh)} km/h</span>
           </div>
 
           {/* Speed-Adaptive Sampling Badge */}
           {isAuditing && hudSpeedKmh <= MIN_SPEED_KMH ? (
-            <div className="inline-flex items-center gap-2 rounded-full border border-amber-400/60 bg-amber-500/20 px-3.5 py-1.5 text-sm font-semibold text-amber-200 backdrop-blur-md">
-              <PauseCircle className="h-4 w-4" />
+            <div className="inline-flex items-center gap-2 rounded-full border border-amber-300 bg-amber-50/95 px-3.5 py-1.5 text-sm font-semibold text-amber-800 shadow-sm backdrop-blur-md">
+              <PauseCircle className="h-4 w-4 text-amber-600" />
               <span>Em Pausa (&lt; 3 km/h)</span>
             </div>
           ) : (
             <div
-              className={`inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-sm font-semibold backdrop-blur-md ${
+              className={`inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-sm font-semibold shadow-sm backdrop-blur-md ${
                 isAuditing
-                  ? "border-emerald-400/60 bg-emerald-500/20 text-emerald-200"
-                  : "border-white/15 bg-slate-900/80 text-slate-300"
+                  ? "border-emerald-300 bg-emerald-50/95 text-emerald-800"
+                  : "border-slate-200/90 bg-white/95 text-slate-800"
               }`}
             >
-              <Radio className={`h-4 w-4 ${isAuditing ? "animate-pulse text-emerald-400" : ""}`} />
+              <Radio
+                className={`h-4 w-4 ${
+                  isAuditing ? "animate-pulse text-emerald-600" : "text-slate-600"
+                }`}
+              />
               <span>
                 {isAuditing ? `${samplingFps} FPS Ativo` : "Pronto (5–10 FPS)"}
               </span>
@@ -599,15 +723,34 @@ export default function CapturaAoVivoPage() {
 
         <div className="flex flex-wrap items-center gap-2">
           {/* Lens Indicator */}
-          <div className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-slate-900/85 px-3.5 py-1.5 text-xs font-semibold text-slate-200 backdrop-blur-md sm:text-sm">
-            <Camera className="h-4 w-4 text-emerald-400" />
+          <div className="inline-flex items-center gap-2 rounded-full border border-slate-200/90 bg-white/95 px-3.5 py-1.5 text-xs font-semibold text-slate-900 shadow-sm backdrop-blur-md sm:text-sm">
+            <Camera className="h-4 w-4 text-emerald-600" />
             <span>{lensLabel}</span>
             {wakeLockActive && (
-              <span className="ml-1 rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px] text-emerald-300">
+              <span className="ml-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800">
                 ECRÃ ATIVO
               </span>
             )}
           </div>
+
+          {/* Map-Matched Road Pill */}
+          {mapMatchedRoad && (
+            <div className="inline-flex items-center gap-2 rounded-full border border-slate-200/90 bg-white/95 px-3.5 py-1.5 text-xs font-semibold text-slate-900 shadow-sm backdrop-blur-md sm:text-sm">
+              <span>
+                {mapMatchedRoad.street_name} • {mapMatchedRoad.road_class}
+                {mapMatchedRoad.snapped ? ` (±${mapMatchedRoad.snap_distance_m}m OSM)` : ""}
+              </span>
+            </div>
+          )}
+
+          {/* 100m Sensitive Zone Proximity Indicator */}
+          {nearbyPoi && (
+            <div className="inline-flex items-center gap-2 rounded-full border border-amber-300 bg-amber-50/95 px-3.5 py-1.5 text-xs font-semibold text-amber-900 shadow-sm backdrop-blur-md sm:text-sm">
+              <span>
+                ⚡ Zona Sensível (&lt;100m): {nearbyPoi.label_pt} ({nearbyPoi.distance_m}m)
+              </span>
+            </div>
+          )}
 
           {/* Offline IndexedDB Queue Pill */}
           {(!isOnline || offlineCount > 0) && (
@@ -633,9 +776,9 @@ export default function CapturaAoVivoPage() {
       <footer className="relative z-20 flex flex-wrap items-center justify-between gap-3 bg-gradient-to-t from-slate-950/95 via-slate-950/75 to-transparent px-4 pt-8 pb-5 sm:px-6">
         <Link
           href="/entradas"
-          className="inline-flex items-center gap-2 rounded-2xl border border-white/20 bg-slate-900/90 px-4 py-3 text-sm font-semibold text-white backdrop-blur-md transition-colors hover:bg-slate-800"
+          className="inline-flex items-center gap-2 rounded-2xl border border-slate-200/90 bg-white/95 px-4 py-3 text-sm font-semibold text-slate-900 shadow-md backdrop-blur-md transition-colors hover:bg-white"
         >
-          <ArrowLeft className="h-4 w-4" />
+          <ArrowLeft className="h-4 w-4 text-slate-700" />
           Voltar a Entradas
         </Link>
 
@@ -643,10 +786,10 @@ export default function CapturaAoVivoPage() {
           type="button"
           onClick={() => void toggleAudit()}
           disabled={!cameraReady && !isAuditing}
-          className={`inline-flex min-w-[220px] items-center justify-center gap-2.5 rounded-2xl px-7 py-4 text-base font-bold shadow-xl transition-all active:scale-[0.98] disabled:opacity-50 ${
+          className={`inline-flex min-w-[220px] items-center justify-center gap-2.5 rounded-2xl px-7 py-4 text-base font-bold text-white shadow-xl transition-all active:scale-[0.98] disabled:opacity-50 ${
             isAuditing
-              ? "bg-rose-600 text-white hover:bg-rose-500"
-              : "bg-emerald-500 text-slate-950 hover:bg-emerald-400"
+              ? "bg-rose-600 hover:bg-rose-500"
+              : "bg-emerald-500 hover:bg-emerald-400"
           }`}
         >
           {isAuditing ? (
@@ -662,11 +805,11 @@ export default function CapturaAoVivoPage() {
           )}
         </button>
 
-        <div className="inline-flex items-center gap-2.5 rounded-2xl border border-white/20 bg-slate-900/90 px-4 py-3 text-sm font-semibold text-white backdrop-blur-md">
-          <Activity className="h-4 w-4 text-emerald-400" />
+        <div className="inline-flex items-center gap-2.5 rounded-2xl border border-slate-200/90 bg-white/95 px-4 py-3 text-sm font-semibold text-slate-900 shadow-md backdrop-blur-md">
+          <Activity className="h-4 w-4 text-emerald-600" />
           <span>
             Deteções na sessão:{" "}
-            <strong className="font-mono text-base text-emerald-300">
+            <strong className="font-mono text-base text-emerald-700">
               {sessionDetections}
             </strong>
           </span>

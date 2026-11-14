@@ -15,6 +15,30 @@ export type GravidadeNivel = "Baixa" | "Média" | "Crítica";
 
 export type ClassificacaoVia = "Av. Marginal" | "Urb. Arterial" | "EN 125" | "Rua Local";
 
+export type GestaoCompetencia =
+  | "Câmara Municipal de Loulé"
+  | "Infraestruturas de Portugal (IP)"
+  | "Concessionária (Via do Infante / Subconcessão)";
+
+export const FREGUESIA_LIST = [
+  "Quarteira",
+  "Almancil",
+  "São Clemente",
+  "São Sebastião",
+  "Boliqueime",
+  "Alte",
+  "Salir",
+  "Ameixial",
+  "Tôr",
+  "Vilamoura",
+] as const;
+
+export const GESTAO_FILTER_OPTIONS: { value: GestaoCompetencia; label: string }[] = [
+  { value: "Câmara Municipal de Loulé", label: "CML — Municipal" },
+  { value: "Infraestruturas de Portugal (IP)", label: "Infraestruturas de Portugal" },
+  { value: "Concessionária (Via do Infante / Subconcessão)", label: "Concessão" },
+];
+
 export interface YoloBBoxOverlay {
   /** Normalized percentages (0–100) for responsive SVG bounding box rendering */
   xPct: number;
@@ -24,15 +48,31 @@ export interface YoloBBoxOverlay {
   className: string;
 }
 
+export interface ProximidadeSensivel {
+  nome: string;
+  tipo: "Escola" | "Hospital" | "Rotunda" | "Passadeira";
+  distanciaM: number;
+  gravidadeBase: GravidadeNivel;
+}
+
 export interface EntradaAnomalia {
   id: string;
   tipo: TipoAnomalia;
   confianca: number; // 0 to 1
   rua: string;
-  freguesia: "Quarteira" | "Vilamoura" | "Almancil" | "Loulé";
+  freguesia: string;
   classificacaoVia: ClassificacaoVia;
+  roadnumber?: string;
+  categoria?: string;
+  nVias?: string;
+  gestao?: GestaoCompetencia;
+  slaExempt?: boolean;
   coberturaPct: number; // e.g. 0.78 to 3.45
+  profundidadeCm?: number;
   areaEstimadaM2: number;
+  areaEstimadaCm2: number;
+  nitidezScore?: number;
+  proximidadeSensivel?: ProximidadeSensivel;
   estado: EstadoEntrada;
   ultimaDetecaoIso: string;
   ultimaDetecaoLabel: string;
@@ -46,10 +86,27 @@ export interface EntradaAnomalia {
   notas?: string;
 }
 
-export function getGravidade(coberturaPct: number): GravidadeNivel {
-  if (coberturaPct >= 2.4) return "Crítica";
-  if (coberturaPct >= 1.35) return "Média";
-  return "Baixa";
+export function getGravidade(
+  coberturaPct: number,
+  areaEstimadaCm2?: number,
+  proximidadeSensivel?: ProximidadeSensivel,
+): GravidadeNivel {
+  let base: GravidadeNivel;
+  if (typeof areaEstimadaCm2 === "number" && Number.isFinite(areaEstimadaCm2)) {
+    if (areaEstimadaCm2 >= 1500) base = "Crítica";
+    else if (areaEstimadaCm2 >= 450) base = "Média";
+    else base = "Baixa";
+  } else {
+    if (coberturaPct >= 2.4) base = "Crítica";
+    else if (coberturaPct >= 1.35) base = "Média";
+    else base = "Baixa";
+  }
+
+  if (proximidadeSensivel && proximidadeSensivel.distanciaM <= 100) {
+    if (base === "Baixa") return "Média";
+    if (base === "Média") return "Crítica";
+  }
+  return base;
 }
 
 export const TIPO_ANOMALIA_LIST: TipoAnomalia[] = [
@@ -85,6 +142,14 @@ export const ENTRADAS_MOCK_DATA: EntradaAnomalia[] = [
     classificacaoVia: "Av. Marginal",
     coberturaPct: 3.45,
     areaEstimadaM2: 0.48,
+    areaEstimadaCm2: 4800,
+    nitidezScore: 248.4,
+    proximidadeSensivel: {
+      nome: "Passadeira Av. Infante de Sagres",
+      tipo: "Passadeira",
+      distanciaM: 18,
+      gravidadeBase: "Crítica",
+    },
     estado: "Pendente",
     ultimaDetecaoIso: "2026-11-14T09:42:00Z",
     ultimaDetecaoLabel: "14 Nov 2026, 09:42",
@@ -104,8 +169,15 @@ export const ENTRADAS_MOCK_DATA: EntradaAnomalia[] = [
     rua: "EN 125 (Km 98,4)",
     freguesia: "Almancil",
     classificacaoVia: "EN 125",
+    roadnumber: "EN125",
+    categoria: "Estrada Nacional",
+    nVias: "2",
+    gestao: "Infraestruturas de Portugal (IP)",
+    slaExempt: true,
     coberturaPct: 3.12,
     areaEstimadaM2: 0.42,
+    areaEstimadaCm2: 4200,
+    nitidezScore: 215.7,
     estado: "Em Reparação",
     ultimaDetecaoIso: "2026-11-14T08:55:00Z",
     ultimaDetecaoLabel: "14 Nov 2026, 08:55",
@@ -127,6 +199,8 @@ export const ENTRADAS_MOCK_DATA: EntradaAnomalia[] = [
     classificacaoVia: "Urb. Arterial",
     coberturaPct: 2.64,
     areaEstimadaM2: 0.36,
+    areaEstimadaCm2: 3600,
+    nitidezScore: 192.0,
     estado: "Agendado",
     ultimaDetecaoIso: "2026-11-13T17:18:00Z",
     ultimaDetecaoLabel: "13 Nov 2026, 17:18",
@@ -147,7 +221,15 @@ export const ENTRADAS_MOCK_DATA: EntradaAnomalia[] = [
     freguesia: "Quarteira",
     classificacaoVia: "Urb. Arterial",
     coberturaPct: 1.94,
-    areaEstimadaM2: 0.27,
+    areaEstimadaM2: 0.12,
+    areaEstimadaCm2: 1180,
+    nitidezScore: 204.2,
+    proximidadeSensivel: {
+      nome: "Rotunda da Av. Sá Carneiro",
+      tipo: "Rotunda",
+      distanciaM: 64,
+      gravidadeBase: "Média",
+    },
     estado: "Pendente",
     ultimaDetecaoIso: "2026-11-14T07:30:00Z",
     ultimaDetecaoLabel: "14 Nov 2026, 07:30",
@@ -168,7 +250,15 @@ export const ENTRADAS_MOCK_DATA: EntradaAnomalia[] = [
     freguesia: "Quarteira",
     classificacaoVia: "Rua Local",
     coberturaPct: 1.48,
-    areaEstimadaM2: 0.21,
+    areaEstimadaM2: 0.09,
+    areaEstimadaCm2: 860,
+    nitidezScore: 176.8,
+    proximidadeSensivel: {
+      nome: "Centro de Saúde de Quarteira",
+      tipo: "Hospital",
+      distanciaM: 82,
+      gravidadeBase: "Média",
+    },
     estado: "Agendado",
     ultimaDetecaoIso: "2026-11-13T15:05:00Z",
     ultimaDetecaoLabel: "13 Nov 2026, 15:05",
@@ -190,6 +280,14 @@ export const ENTRADAS_MOCK_DATA: EntradaAnomalia[] = [
     classificacaoVia: "Urb. Arterial",
     coberturaPct: 2.89,
     areaEstimadaM2: 0.39,
+    areaEstimadaCm2: 3900,
+    nitidezScore: 261.3,
+    proximidadeSensivel: {
+      nome: "Passadeira Av. José da Costa Mealha",
+      tipo: "Passadeira",
+      distanciaM: 42,
+      gravidadeBase: "Crítica",
+    },
     estado: "Pendente",
     ultimaDetecaoIso: "2026-11-14T10:12:00Z",
     ultimaDetecaoLabel: "14 Nov 2026, 10:12",
@@ -210,7 +308,9 @@ export const ENTRADAS_MOCK_DATA: EntradaAnomalia[] = [
     freguesia: "Vilamoura",
     classificacaoVia: "Rua Local",
     coberturaPct: 0.92,
-    areaEstimadaM2: 0.13,
+    areaEstimadaM2: 0.04,
+    areaEstimadaCm2: 390,
+    nitidezScore: 164.0,
     estado: "Resolvido",
     ultimaDetecaoIso: "2026-11-11T11:20:00Z",
     ultimaDetecaoLabel: "11 Nov 2026, 11:20",
@@ -232,6 +332,14 @@ export const ENTRADAS_MOCK_DATA: EntradaAnomalia[] = [
     classificacaoVia: "Rua Local",
     coberturaPct: 2.46,
     areaEstimadaM2: 0.34,
+    areaEstimadaCm2: 3400,
+    nitidezScore: 229.5,
+    proximidadeSensivel: {
+      nome: "Passadeira Av. 5 de Outubro",
+      tipo: "Passadeira",
+      distanciaM: 89,
+      gravidadeBase: "Crítica",
+    },
     estado: "Pendente",
     ultimaDetecaoIso: "2026-11-13T16:40:00Z",
     ultimaDetecaoLabel: "13 Nov 2026, 16:40",
@@ -252,7 +360,15 @@ export const ENTRADAS_MOCK_DATA: EntradaAnomalia[] = [
     freguesia: "Loulé",
     classificacaoVia: "Urb. Arterial",
     coberturaPct: 1.65,
-    areaEstimadaM2: 0.23,
+    areaEstimadaM2: 0.11,
+    areaEstimadaCm2: 1120,
+    nitidezScore: 188.1,
+    proximidadeSensivel: {
+      nome: "Escola Secundária de Loulé",
+      tipo: "Escola",
+      distanciaM: 76,
+      gravidadeBase: "Média",
+    },
     estado: "Em Reparação",
     ultimaDetecaoIso: "2026-11-12T14:10:00Z",
     ultimaDetecaoLabel: "12 Nov 2026, 14:10",
@@ -273,7 +389,9 @@ export const ENTRADAS_MOCK_DATA: EntradaAnomalia[] = [
     freguesia: "Vilamoura",
     classificacaoVia: "Av. Marginal",
     coberturaPct: 0.78,
-    areaEstimadaM2: 0.11,
+    areaEstimadaM2: 0.03,
+    areaEstimadaCm2: 320,
+    nitidezScore: 152.9,
     estado: "Resolvido",
     ultimaDetecaoIso: "2026-11-10T09:15:00Z",
     ultimaDetecaoLabel: "10 Nov 2026, 09:15",
@@ -294,7 +412,15 @@ export const ENTRADAS_MOCK_DATA: EntradaAnomalia[] = [
     freguesia: "Quarteira",
     classificacaoVia: "Urb. Arterial",
     coberturaPct: 2.18,
-    areaEstimadaM2: 0.31,
+    areaEstimadaM2: 0.13,
+    areaEstimadaCm2: 1340,
+    nitidezScore: 210.6,
+    proximidadeSensivel: {
+      nome: "Rotunda do Polvo (Quarteira)",
+      tipo: "Rotunda",
+      distanciaM: 45,
+      gravidadeBase: "Média",
+    },
     estado: "Agendado",
     ultimaDetecaoIso: "2026-11-14T06:50:00Z",
     ultimaDetecaoLabel: "14 Nov 2026, 06:50",
@@ -315,7 +441,9 @@ export const ENTRADAS_MOCK_DATA: EntradaAnomalia[] = [
     freguesia: "Loulé",
     classificacaoVia: "Rua Local",
     coberturaPct: 1.05,
-    areaEstimadaM2: 0.15,
+    areaEstimadaM2: 0.04,
+    areaEstimadaCm2: 410,
+    nitidezScore: 171.2,
     estado: "Resolvido",
     ultimaDetecaoIso: "2026-11-09T18:05:00Z",
     ultimaDetecaoLabel: "09 Nov 2026, 18:05",
@@ -340,7 +468,9 @@ export function exportEntradasToCsv(entries: EntradaAnomalia[], filename = "siri
     "ClassificacaoVia",
     "CoberturaPct",
     "Gravidade",
+    "AreaEstimadaCm2",
     "AreaEstimadaM2",
+    "ProximidadeSensivel",
     "Estado",
     "UltimaDetecao",
     "Recorrencia",
@@ -356,8 +486,12 @@ export function exportEntradasToCsv(entries: EntradaAnomalia[], filename = "siri
     e.freguesia,
     `"${e.classificacaoVia}"`,
     e.coberturaPct.toFixed(2),
-    getGravidade(e.coberturaPct),
+    getGravidade(e.coberturaPct, e.areaEstimadaCm2, e.proximidadeSensivel),
+    Math.round(e.areaEstimadaCm2),
     e.areaEstimadaM2.toFixed(2),
+    e.proximidadeSensivel
+      ? `"${e.proximidadeSensivel.tipo}: ${e.proximidadeSensivel.nome} (${e.proximidadeSensivel.distanciaM}m)"`
+      : '""',
     e.estado,
     `"${e.ultimaDetecaoLabel}"`,
     e.recorrencia,
@@ -386,8 +520,10 @@ export function exportEntradasToGeoJson(entries: EntradaAnomalia[], filename = "
         freguesia: e.freguesia,
         classificacaoVia: e.classificacaoVia,
         coberturaPct: e.coberturaPct,
-        gravidade: getGravidade(e.coberturaPct),
+        gravidade: getGravidade(e.coberturaPct, e.areaEstimadaCm2, e.proximidadeSensivel),
+        areaEstimadaCm2: e.areaEstimadaCm2,
         areaEstimadaM2: e.areaEstimadaM2,
+        proximidadeSensivel: e.proximidadeSensivel ?? null,
         estado: e.estado,
         ultimaDetecao: e.ultimaDetecaoIso,
         recorrencia: e.recorrencia,
@@ -403,11 +539,58 @@ export function exportFichaTecnica(entry: EntradaAnomalia): void {
     plataforma: "SIRI-DL · Câmara Municipal de Loulé",
     exportadoEm: new Date().toISOString(),
     registo: entry,
-    gravidade: getGravidade(entry.coberturaPct),
+    gravidade: getGravidade(entry.coberturaPct, entry.areaEstimadaCm2, entry.proximidadeSensivel),
   };
   triggerDownload(
     JSON.stringify(payload, null, 2),
     `ficha-${entry.id.toLowerCase()}.json`,
+    "application/json;charset=utf-8;",
+  );
+}
+
+export function exportOficioIP(entry: EntradaAnomalia): void {
+  const gravidade = getGravidade(
+    entry.coberturaPct,
+    entry.areaEstimadaCm2,
+    entry.proximidadeSensivel,
+  );
+  const oficio = {
+    documento: "Ofício Técnico de Encaminhamento — Infraestruturas de Portugal (IP)",
+    entidadeEmitente: "Câmara Municipal de Loulé · Divisão de Mobilidade e Infraestruturas Viárias",
+    entidadeDestinataria: "Infraestruturas de Portugal, S.A. — Direção Regional do Algarve",
+    referenciaInterna: `OF-IP-${entry.id}-${new Date().toISOString().slice(0, 10)}`,
+    emitidoEm: new Date().toISOString(),
+    enquadramento: {
+      roadnumber: entry.roadnumber ?? "EN125",
+      categoria: entry.categoria ?? "Estrada Nacional",
+      nVias: entry.nVias ?? "2",
+      gestao: entry.gestao ?? "Infraestruturas de Portugal (IP)",
+      freguesia: entry.freguesia,
+      local: entry.rua,
+      slaMunicipalIsento: true,
+    },
+    localizacaoGps: {
+      latitude: entry.lat,
+      longitude: entry.lng,
+      srid: 4326,
+    },
+    diagnosticoIA: {
+      tipoAnomalia: entry.tipo,
+      gravidade,
+      confiancaYolo: entry.confianca,
+      areaEstimadaCm2: entry.areaEstimadaCm2,
+      mascaraSeveridadeBbox: entry.bbox,
+    },
+    evidenciaFotografica: {
+      imagemUrl: entry.imagemUrl,
+      viaturaOrigem: entry.viatura,
+      dataDetecao: entry.ultimaDetecaoIso,
+    },
+    notas: entry.notas ?? null,
+  };
+  triggerDownload(
+    JSON.stringify(oficio, null, 2),
+    `oficio-ip-${(entry.roadnumber ?? "en125").toLowerCase()}-${entry.id.toLowerCase()}.json`,
     "application/json;charset=utf-8;",
   );
 }

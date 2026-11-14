@@ -61,6 +61,7 @@ import {
   exportEntradasToCsv,
   exportEntradasToGeoJson,
   exportFichaTecnica,
+  exportOficioIP,
   getGravidade,
   type EntradaAnomalia,
   type EstadoEntrada,
@@ -197,16 +198,34 @@ export function EntradasTable({
         header: "Via / Localização",
         cell: ({ row }) => {
           const item = row.original;
+          const isIP = item.gestao === "Infraestruturas de Portugal (IP)";
+          const isConcessao = item.gestao === "Concessionária (Via do Infante / Subconcessão)";
+          const viasLabel = item.nVias ? ` (${item.nVias} vias)` : "";
+          const jurisdictionBadge = isIP
+            ? `IP • ${item.roadnumber ?? "EN"}${viasLabel}`
+            : isConcessao
+              ? `Concessão • ${item.roadnumber ?? "A22"}${item.nVias ? ` (${item.nVias})` : ""}`
+              : item.classificacaoVia;
+
           return (
-            <div className="flex min-w-[180px] flex-col">
+            <div className="flex min-w-[195px] flex-col">
               <span className="truncate text-sm font-medium text-foreground">
                 {item.rua}
               </span>
-              <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+              <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
                 <span>{item.freguesia}</span>
                 <span>•</span>
-                <span className="inline-flex items-center rounded-md border border-emerald-200/80 bg-emerald-50/70 px-1.5 py-0.25 text-[11px] font-medium text-emerald-700 dark:border-emerald-800/50 dark:bg-emerald-950/40 dark:text-emerald-300">
-                  {item.classificacaoVia}
+                <span
+                  className={cn(
+                    "inline-flex items-center rounded-md border px-1.5 py-0.25 text-[11px] font-medium",
+                    isIP
+                      ? "border-amber-300/80 bg-amber-50/80 text-amber-800 dark:border-amber-700/60 dark:bg-amber-950/50 dark:text-amber-300"
+                      : isConcessao
+                        ? "border-indigo-300/80 bg-indigo-50/80 text-indigo-800 dark:border-indigo-700/60 dark:bg-indigo-950/50 dark:text-indigo-300"
+                        : "border-emerald-200/80 bg-emerald-50/70 text-emerald-700 dark:border-emerald-800/50 dark:bg-emerald-950/40 dark:text-emerald-300",
+                  )}
+                >
+                  {jurisdictionBadge}
                 </span>
               </div>
             </div>
@@ -227,11 +246,11 @@ export function EntradasTable({
         ),
         cell: ({ row }) => {
           const item = row.original;
-          const grav = getGravidade(item.coberturaPct);
+          const grav = getGravidade(item.coberturaPct, item.areaEstimadaCm2, item.proximidadeSensivel);
           const style = SEVERITY_STYLES[grav];
-          const barWidth = Math.min(100, Math.round((item.coberturaPct / 4.0) * 100));
+          const barWidth = Math.min(100, Math.round((item.areaEstimadaCm2 / 4800) * 100));
           return (
-            <div className="flex min-w-[145px] flex-col gap-1">
+            <div className="flex min-w-[165px] flex-col gap-1">
               <div className="flex items-center justify-between gap-2">
                 <span
                   className={cn(
@@ -242,7 +261,7 @@ export function EntradasTable({
                   {grav}
                 </span>
                 <span className="font-mono text-xs font-medium text-foreground">
-                  {item.coberturaPct.toFixed(2).replace(".", ",")}%
+                  ~{Math.round(item.areaEstimadaCm2).toLocaleString("pt-PT")} cm²
                 </span>
               </div>
               <div className="flex items-center gap-2">
@@ -253,9 +272,17 @@ export function EntradasTable({
                   />
                 </div>
                 <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
-                  ~{item.areaEstimadaM2.toFixed(2).replace(".", ",")} m²
+                  {item.areaEstimadaM2.toFixed(2).replace(".", ",")} m²
                 </span>
               </div>
+              {item.proximidadeSensivel && (
+                <span
+                  title={`${item.proximidadeSensivel.nome} (${item.proximidadeSensivel.distanciaM} m)`}
+                  className="inline-flex w-fit items-center gap-1 rounded border border-amber-200 bg-amber-50/90 px-1.5 py-0.25 text-[10px] font-semibold text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-300"
+                >
+                  ⚡ &lt;100m {item.proximidadeSensivel.tipo} ({item.proximidadeSensivel.distanciaM}m)
+                </span>
+              )}
             </div>
           );
         },
@@ -385,6 +412,17 @@ export function EntradasTable({
                     <FileText className="mr-2 size-4 text-muted-foreground" />
                     Exportar Ficha
                   </DropdownMenuItem>
+                  {item.gestao === "Infraestruturas de Portugal (IP)" && (
+                    <DropdownMenuItem
+                      onClick={() => {
+                        exportOficioIP(item);
+                        toast.success(`Ofício técnico para IP (${item.roadnumber ?? "EN125"}) gerado`);
+                      }}
+                    >
+                      <Download className="mr-2 size-4 text-amber-600" />
+                      Gerar Ofício para IP
+                    </DropdownMenuItem>
+                  )}
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
                     disabled={item.estado === "Resolvido"}
@@ -632,7 +670,15 @@ export function EntradasTable({
                     width={previewEntry.bbox.wPct}
                     height={previewEntry.bbox.hPct}
                     fill="none"
-                    stroke={SEVERITY_STYLES[getGravidade(previewEntry.coberturaPct)].stroke}
+                    stroke={
+                      SEVERITY_STYLES[
+                        getGravidade(
+                          previewEntry.coberturaPct,
+                          previewEntry.areaEstimadaCm2,
+                          previewEntry.proximidadeSensivel,
+                        )
+                      ].stroke
+                    }
                     strokeWidth="0.7"
                     rx="0.6"
                   />
@@ -643,7 +689,13 @@ export function EntradasTable({
                     left: `${previewEntry.bbox.xPct}%`,
                     top: `${Math.max(2, previewEntry.bbox.yPct - 6)}%`,
                     backgroundColor:
-                      SEVERITY_STYLES[getGravidade(previewEntry.coberturaPct)].stroke,
+                      SEVERITY_STYLES[
+                        getGravidade(
+                          previewEntry.coberturaPct,
+                          previewEntry.areaEstimadaCm2,
+                          previewEntry.proximidadeSensivel,
+                        )
+                      ].stroke,
                   }}
                 >
                   {previewEntry.bbox.className}{" "}
@@ -659,9 +711,9 @@ export function EntradasTable({
                   </p>
                 </div>
                 <div>
-                  <p className="text-muted-foreground">Cobertura / Área</p>
+                  <p className="text-muted-foreground">Área (Homografia BEV)</p>
                   <p className="mt-0.5 font-mono font-semibold text-foreground">
-                    {previewEntry.coberturaPct.toFixed(2).replace(".", ",")}% (~
+                    ~{Math.round(previewEntry.areaEstimadaCm2).toLocaleString("pt-PT")} cm² (
                     {previewEntry.areaEstimadaM2.toFixed(2).replace(".", ",")} m²)
                   </p>
                 </div>

@@ -23,18 +23,36 @@ import {
 
 import { PinDropperMap } from "@/components/participar/pin-dropper-map";
 import { extractExifGpsFromFile } from "@/lib/exif-gps";
+import { compressImageAspectFit } from "@/lib/image-resize";
 
 type PortalTab = "photo" | "video";
 
+interface NearbySensitivePoi {
+  name: string;
+  label_pt: string;
+  zone_type: string;
+  distance_m: number;
+}
+
 interface PhotoValidationResponse {
-  status: "accepted" | "rejected_by_ai";
+  status: "accepted" | "rejected_by_ai" | "rejected_by_quality_gate";
+  reason?: string | null;
   message: string;
   anomaly_id?: string;
   anomaly_type?: string;
   confidence?: number;
   max_confidence?: number;
+  estimated_area_cm2?: number;
+  sharpness_score?: number;
+  base_severity?: "Baixa" | "Média" | "Crítica";
   severity?: "Baixa" | "Média" | "Crítica";
+  proximity_boost?: boolean;
+  nearby_poi?: NearbySensitivePoi | null;
   street_name?: string;
+  parish?: string;
+  road_class?: string;
+  snapped?: boolean;
+  snap_distance_m?: number;
   deduplicated?: boolean;
   times_detected?: number;
   lat?: number;
@@ -137,15 +155,18 @@ export default function ParticiparPage() {
         return;
       }
 
+      // Extract EXIF GPS from the original file before canvas compression strips metadata
+      const exifCoords = await extractExifGpsFromFile(file);
+      const optimizedFile = await compressImageAspectFit(file, 1280, 0.85);
+
       if (photoPreviewUrl) {
         URL.revokeObjectURL(photoPreviewUrl);
       }
-      setPhotoFile(file);
-      setPhotoPreviewUrl(URL.createObjectURL(file));
+      setPhotoFile(optimizedFile);
+      setPhotoPreviewUrl(URL.createObjectURL(optimizedFile));
       setPhotoResult(null);
       setPhotoStage("idle");
 
-      const exifCoords = await extractExifGpsFromFile(file);
       if (exifCoords) {
         setCoords(exifCoords);
         setGpsSource("exif");
@@ -187,6 +208,9 @@ export default function ParticiparPage() {
       setPhotoStage("done");
 
       if (payload.status === "accepted") {
+        if (typeof payload.lat === "number" && typeof payload.lng === "number") {
+          setCoords({ lat: payload.lat, lng: payload.lng });
+        }
         toast.success("Participação registada e validada pela IA!");
       } else {
         toast.warning("A IA não confirmou anomalia viária nesta imagem.");
@@ -524,23 +548,57 @@ export default function ParticiparPage() {
                       </div>
                       <div className="flex flex-wrap gap-2 text-xs text-emerald-800">
                         <span>Estado: Pendente de revisão municipal</span>
+                        {typeof photoResult.estimated_area_cm2 === "number" && (
+                          <span className="rounded-md bg-white px-2 py-0.5 font-mono font-semibold text-slate-800 ring-1 ring-emerald-200">
+                            Área estimada (Homografia): ~{Math.round(photoResult.estimated_area_cm2)} cm²
+                          </span>
+                        )}
+                        {typeof photoResult.sharpness_score === "number" && (
+                          <span className="rounded-md bg-white px-2 py-0.5 font-mono text-slate-700 ring-1 ring-emerald-200">
+                            Nitidez: {photoResult.sharpness_score.toFixed(0)}
+                          </span>
+                        )}
+                        {photoResult.street_name && (
+                          <span className="rounded-md bg-white px-2 py-0.5 font-semibold text-emerald-900 ring-1 ring-emerald-200">
+                            {photoResult.street_name}
+                            {photoResult.road_class ? ` • ${photoResult.road_class}` : ""}
+                            {photoResult.snapped && typeof photoResult.snap_distance_m === "number"
+                              ? ` (alinhado ${photoResult.snap_distance_m}m ao eixo OSM)`
+                              : ""}
+                          </span>
+                        )}
                         {photoResult.deduplicated && (
                           <span>
                             • Agrupado a ocorrência existente ({photoResult.times_detected}x reportada)
                           </span>
                         )}
                       </div>
+                      {photoResult.proximity_boost && photoResult.nearby_poi && (
+                        <div className="mt-1 inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-100/90 px-2.5 py-1 text-xs font-semibold text-amber-900">
+                          <AlertTriangle className="h-3.5 w-3.5 text-amber-700" />
+                          <span>
+                            Prioridade agravada (+1 nível): a {photoResult.nearby_poi.distance_m}m de{" "}
+                            {photoResult.nearby_poi.label_pt} ({photoResult.nearby_poi.name})
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
               )}
 
-              {photoResult && photoResult.status === "rejected_by_ai" && (
+              {photoResult &&
+                (photoResult.status === "rejected_by_ai" ||
+                  photoResult.status === "rejected_by_quality_gate") && (
                 <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
                   <div className="flex items-start gap-2.5">
                     <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
                     <div className="space-y-1">
-                      <p className="font-semibold">Nenhuma anomalia confirmada pela IA</p>
+                      <p className="font-semibold">
+                        {photoResult.status === "rejected_by_quality_gate"
+                          ? "Fotografia descartada pelo controlo de qualidade ótica"
+                          : "Nenhuma anomalia confirmada pela IA"}
+                      </p>
                       <p className="text-xs leading-relaxed text-amber-800">
                         {photoResult.message}
                       </p>

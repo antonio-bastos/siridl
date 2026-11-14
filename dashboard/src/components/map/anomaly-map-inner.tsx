@@ -17,6 +17,8 @@ import {
 } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import { Globe, Layers, LocateFixed, Minus, Plus, Route, ShieldAlert } from "lucide-react";
+import { MvtTileLayer } from "@/components/map/mvt-tile-layer";
+import { LOULE_PARISH_POLYGONS } from "@/models/loule-parishes-geojson";
 import { cn } from "@/lib/utils";
 import {
   ANOMALY_TYPE_OPTIONS,
@@ -68,7 +70,30 @@ export interface AnomalyMapProps {
   roadPin?: RoadMarkerPin | null;
   onRoadClick?: (lat: number, lng: number) => void;
   heatmapSummary?: ThermalHeatmapSummary;
+  selectedParish?: string;
   children?: React.ReactNode;
+}
+
+function resolveParishPolygons(selectedParish?: string): [number, number][][] | null {
+  if (!selectedParish || selectedParish === "all") return null;
+  if (LOULE_PARISH_POLYGONS[selectedParish]) {
+    return LOULE_PARISH_POLYGONS[selectedParish];
+  }
+  const norm = selectedParish.trim().toLowerCase();
+  const aliases: Record<string, string> = {
+    "são clemente": "Loulé (São Clemente)",
+    "são sebastião": "Loulé (São Sebastião)",
+    "loulé": "Loulé (São Clemente)",
+    vilamoura: "Quarteira",
+  };
+  const mapped = aliases[norm];
+  if (mapped && LOULE_PARISH_POLYGONS[mapped]) {
+    return LOULE_PARISH_POLYGONS[mapped];
+  }
+  const match = Object.keys(LOULE_PARISH_POLYGONS).find((k) =>
+    k.toLowerCase().includes(norm),
+  );
+  return match ? LOULE_PARISH_POLYGONS[match] : null;
 }
 
 type Basemap = "map" | "satellite";
@@ -424,9 +449,11 @@ const AnomalyPinLayer: React.FC<{
 const MapControlsOverlay: React.FC<{
   basemap: Basemap;
   onBasemapChange: (next: Basemap) => void;
+  mvtEnabled: boolean;
+  onToggleMvt: () => void;
   selection: SectorSelection | null;
   cover?: MapCover;
-}> = ({ basemap, onBasemapChange, selection, cover }) => {
+}> = ({ basemap, onBasemapChange, mvtEnabled, onToggleMvt, selection, cover }) => {
   const map = useMap();
 
   const fitMunicipalBounds = () => {
@@ -467,6 +494,20 @@ const MapControlsOverlay: React.FC<{
         >
           <Globe className="size-3.5" />
           Satélite
+        </button>
+        <div className="mx-0.5 h-4 w-px bg-border" />
+        <button
+          type="button"
+          title="Camada de Mosaicos Vetoriais PostGIS (ST_AsMVT 60 FPS)"
+          onClick={onToggleMvt}
+          className={cn(
+            "flex h-7 cursor-pointer items-center gap-1 rounded-lg px-2 text-[11px] font-semibold transition-colors",
+            mvtEnabled
+              ? "bg-emerald-600 text-white"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          MVT
         </button>
       </div>
 
@@ -516,10 +557,16 @@ export const AnomalyMapInner: React.FC<AnomalyMapProps> = ({
   fitRevision = 0,
   roadPin,
   onRoadClick,
+  selectedParish,
   children,
 }) => {
   const [basemap, setBasemap] = React.useState<Basemap>("map");
+  const [mvtEnabled, setMvtEnabled] = React.useState<boolean>(true);
   const [, setCurrentZoom] = React.useState(zoom);
+  const parishPolygons = React.useMemo(
+    () => resolveParishPolygons(selectedParish),
+    [selectedParish],
+  );
 
   React.useEffect(() => {
     setBasemap(readStoredBasemap());
@@ -570,6 +617,24 @@ export const AnomalyMapInner: React.FC<AnomalyMapProps> = ({
           }}
         />
 
+        {/* Selected CAOP 2025 Parish Outline */}
+        {parishPolygons &&
+          parishPolygons.map((ring, idx) => (
+            <Polygon
+              key={`${selectedParish}-${idx}`}
+              positions={ring}
+              pathOptions={{
+                color: "#f59e0b",
+                weight: 3,
+                opacity: 0.95,
+                dashArray: "8 4",
+                fillColor: "#f59e0b",
+                fillOpacity: 0.12,
+                interactive: false,
+              }}
+            />
+          ))}
+
         {/* Optional sector boundary highlight when inspecting a narrowed custom sector */}
         {selection && selection.kind === "circle" && activeRadiusM !== null && activeRadiusM < 20_000 && (
           <Circle
@@ -618,6 +683,9 @@ export const AnomalyMapInner: React.FC<AnomalyMapProps> = ({
         {/* Thermal Heatmap Canvas Layer or additional custom Leaflet overlays */}
         {children}
 
+        {/* PostGIS Vector Tiles (ST_AsMVT 60 FPS) */}
+        <MvtTileLayer enabled={mvtEnabled} />
+
         {/* Live Telemetry Anomaly Pins */}
         {showPins && (
           <AnomalyPinLayer
@@ -656,6 +724,8 @@ export const AnomalyMapInner: React.FC<AnomalyMapProps> = ({
         <MapControlsOverlay
           basemap={basemap}
           onBasemapChange={handleBasemapChange}
+          mvtEnabled={mvtEnabled}
+          onToggleMvt={() => setMvtEnabled((prev) => !prev)}
           selection={selection}
           cover={cover}
         />

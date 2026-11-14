@@ -34,10 +34,14 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { EntradasTable } from "@/components/entradas/entradas-table";
+import { LocationPickerMap } from "@/components/entradas/location-picker-map";
+import { findLouleParishForPoint } from "@/models/loule-parishes-geojson";
 import {
   CLASSIFICACAO_VIA_LIST,
   ENTRADAS_MOCK_DATA,
   ESTADO_LIST,
+  FREGUESIA_LIST,
+  GESTAO_FILTER_OPTIONS,
   GRAVIDADE_LIST,
   TIPO_ANOMALIA_LIST,
   exportEntradasToCsv,
@@ -46,17 +50,37 @@ import {
   type ClassificacaoVia,
   type EntradaAnomalia,
   type EstadoEntrada,
+  type GestaoCompetencia,
   type GravidadeNivel,
   type TipoAnomalia,
 } from "@/models/entradas-data";
 
 export default function EntradasPage() {
   const [entries, setEntries] = React.useState<EntradaAnomalia[]>(ENTRADAS_MOCK_DATA);
+
+  React.useEffect(() => {
+    let active = true;
+    fetch("/api/anomalies", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { entradas?: EntradaAnomalia[] } | null) => {
+        if (active && Array.isArray(data?.entradas) && data.entradas.length > 0) {
+          setEntries(data.entradas);
+        }
+      })
+      .catch(() => {
+        // Keep initial seeded data if offline
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
   const [search, setSearch] = React.useState("");
   const [tipoFilter, setTipoFilter] = React.useState<string>("all");
   const [gravidadeFilter, setGravidadeFilter] = React.useState<string>("all");
   const [estadoFilter, setEstadoFilter] = React.useState<string>("all");
   const [viaFilter, setViaFilter] = React.useState<string>("all");
+  const [freguesiaFilter, setFreguesiaFilter] = React.useState<string>("all");
+  const [gestaoFilter, setGestaoFilter] = React.useState<string>("all");
 
   // Manual Entry Dialog State
   const [manualOpen, setManualOpen] = React.useState(false);
@@ -65,8 +89,54 @@ export default function EntradasPage() {
   const [newFreguesia, setNewFreguesia] =
     React.useState<EntradaAnomalia["freguesia"]>("Quarteira");
   const [newVia, setNewVia] = React.useState<ClassificacaoVia>("Urb. Arterial");
-  const [newCobertura, setNewCobertura] = React.useState("2.10");
+  const [newProfundidade, setNewProfundidade] = React.useState("4.5");
+  const [newLat, setNewLat] = React.useState<number>(37.0715);
+  const [newLng, setNewLng] = React.useState<number>(-8.1025);
   const [newNotas, setNewNotas] = React.useState("");
+
+  const handlePickManualLocation = React.useCallback(async (lat: number, lng: number) => {
+    setNewLat(lat);
+    setNewLng(lng);
+    const detectedParish = findLouleParishForPoint(lat, lng);
+    if (detectedParish) {
+      const normalized = detectedParish.replace("Loulé (", "").replace(")", "");
+      setNewFreguesia(normalized);
+    }
+
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=17&addressdetails=1`,
+        { signal: AbortSignal.timeout(3500) },
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const addr = data?.address ?? {};
+        const roadName = addr.road || addr.pedestrian || addr.residential || addr.suburb;
+        if (typeof roadName === "string" && roadName.trim()) {
+          setNewRua(roadName.trim());
+          const upper = roadName.toUpperCase();
+          if (upper.includes("EN125") || upper.includes("EN 125") || upper.includes("N125")) {
+            setNewVia("EN 125");
+          } else if (upper.includes("MARGINAL") || upper.includes("INFANTE DE SAGRES")) {
+            setNewVia("Av. Marginal");
+          } else if (upper.includes("AV.") || upper.includes("AVENIDA")) {
+            setNewVia("Urb. Arterial");
+          } else {
+            setNewVia("Rua Local");
+          }
+          return;
+        }
+      }
+    } catch {
+      // Offline fallback below
+    }
+
+    setNewRua((prev) =>
+      prev.trim()
+        ? prev
+        : `Via Municipal (${detectedParish ?? "Loulé"} • ${lat.toFixed(4)}, ${lng.toFixed(4)})`,
+    );
+  }, []);
 
   const filteredEntries = React.useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -76,21 +146,32 @@ export default function EntradasPage() {
         if (!hay.includes(q)) return false;
       }
       if (tipoFilter !== "all" && item.tipo !== tipoFilter) return false;
-      if (gravidadeFilter !== "all" && getGravidade(item.coberturaPct) !== gravidadeFilter) {
+      if (
+        gravidadeFilter !== "all" &&
+        getGravidade(item.coberturaPct, item.areaEstimadaCm2, item.proximidadeSensivel) !==
+          gravidadeFilter
+      ) {
         return false;
       }
       if (estadoFilter !== "all" && item.estado !== estadoFilter) return false;
       if (viaFilter !== "all" && item.classificacaoVia !== viaFilter) return false;
+      if (freguesiaFilter !== "all" && item.freguesia !== freguesiaFilter) return false;
+      if (gestaoFilter !== "all") {
+        const itemGestao: GestaoCompetencia = item.gestao ?? "Câmara Municipal de Loulé";
+        if (itemGestao !== gestaoFilter) return false;
+      }
       return true;
     });
-  }, [entries, search, tipoFilter, gravidadeFilter, estadoFilter, viaFilter]);
+  }, [entries, search, tipoFilter, gravidadeFilter, estadoFilter, viaFilter, freguesiaFilter, gestaoFilter]);
 
   const hasActiveFilters =
     search.trim() !== "" ||
     tipoFilter !== "all" ||
     gravidadeFilter !== "all" ||
     estadoFilter !== "all" ||
-    viaFilter !== "all";
+    viaFilter !== "all" ||
+    freguesiaFilter !== "all" ||
+    gestaoFilter !== "all";
 
   const resetFilters = () => {
     setSearch("");
@@ -98,17 +179,30 @@ export default function EntradasPage() {
     setGravidadeFilter("all");
     setEstadoFilter("all");
     setViaFilter("all");
+    setFreguesiaFilter("all");
+    setGestaoFilter("all");
   };
 
-  // Top KPI Strip calculations
+  // Top KPI Strip calculations (excluding IP / Concessão from internal municipal SLA penalties)
   const kpis = React.useMemo(() => {
     const total = entries.length;
-    const criticasPendentes = entries.filter(
-      (e) => getGravidade(e.coberturaPct) === "Crítica" && e.estado === "Pendente",
+    const municipalEntries = entries.filter(
+      (e) =>
+        !e.slaExempt &&
+        e.gestao !== "Infraestruturas de Portugal (IP)" &&
+        e.gestao !== "Concessionária (Via do Infante / Subconcessão)",
+    );
+    const criticasPendentes = municipalEntries.filter(
+      (e) =>
+        getGravidade(e.coberturaPct, e.areaEstimadaCm2, e.proximidadeSensivel) === "Crítica" &&
+        e.estado === "Pendente",
     ).length;
     const areaTotalM2 = entries.reduce((acc, e) => acc + e.areaEstimadaM2, 0);
-    const resolvidos = entries.filter((e) => e.estado === "Resolvido").length;
-    const taxaResolucao = total > 0 ? Math.round((resolvidos / total) * 100) : 0;
+    const resolvidos = municipalEntries.filter((e) => e.estado === "Resolvido").length;
+    const taxaResolucao =
+      municipalEntries.length > 0
+        ? Math.round((resolvidos / municipalEntries.length) * 100)
+        : 0;
     return { total, criticasPendentes, areaTotalM2, taxaResolucao, resolvidos };
   }, [entries]);
 
@@ -116,6 +210,11 @@ export default function EntradasPage() {
     setEntries((prev) =>
       prev.map((e) => (e.id === id ? { ...e, estado: nextStatus } : e)),
     );
+    void fetch(`/api/anomalies/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ estado: nextStatus }),
+    });
   }, []);
 
   const handleBulkStatusChange = React.useCallback(
@@ -124,41 +223,64 @@ export default function EntradasPage() {
       setEntries((prev) =>
         prev.map((e) => (idSet.has(e.id) ? { ...e, estado: nextStatus } : e)),
       );
+      void fetch("/api/anomalies", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids, estado: nextStatus }),
+      });
     },
     [],
   );
 
-  const handleCreateManualEntry = (e: React.FormEvent) => {
+  const handleCreateManualEntry = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newRua.trim()) {
       toast.error("Indique o nome da rua ou via.");
       return;
     }
-    const cob = Math.min(8, Math.max(0.2, Number(newCobertura) || 1.5));
+    const depthCm = Math.min(35, Math.max(0.5, Number(newProfundidade) || 4.5));
+    const estimatedAreaCm2 = Math.round(depthCm * 380);
+    const cob = Math.min(8, Math.max(0.4, Number((estimatedAreaCm2 / 1400).toFixed(2))));
     const nextNum = 101 + entries.length;
-    const created: EntradaAnomalia = {
-      id: `ANM-${nextNum}`,
+    const candidate: EntradaAnomalia = {
+      id: `ANM-${nextNum}-${Date.now().toString().slice(-3)}`,
       tipo: newTipo,
       confianca: 1.0,
       rua: newRua.trim(),
       freguesia: newFreguesia,
       classificacaoVia: newVia,
-      coberturaPct: Number(cob.toFixed(2)),
-      areaEstimadaM2: Number((cob * 0.14).toFixed(2)),
+      coberturaPct: cob,
+      profundidadeCm: depthCm,
+      areaEstimadaM2: Number((estimatedAreaCm2 / 10_000).toFixed(2)),
+      areaEstimadaCm2: estimatedAreaCm2,
       estado: "Pendente",
       ultimaDetecaoIso: new Date().toISOString(),
       ultimaDetecaoLabel: "14 Nov 2026, Agora",
       recorrencia: 1,
-      lat: 37.0715,
-      lng: -8.1025,
+      lat: Number.isFinite(newLat) ? newLat : 37.0715,
+      lng: Number.isFinite(newLng) ? newLng : -8.1025,
       viatura: "Registo Manual (Obras Públicas)",
-      imagemUrl: "/assets/reference.jpg",
+      imagemUrl: "/api/media/assets/reference.jpg",
       thumbPosition: "50% 50%",
       bbox: { xPct: 35, yPct: 45, wPct: 30, hPct: 22, className: "manual" },
       notas: newNotas.trim() || undefined,
     };
-    setEntries((prev) => [created, ...prev]);
-    toast.success(`Registo #${created.id} adicionado à lista`);
+
+    try {
+      const res = await fetch("/api/anomalies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(candidate),
+      });
+      const data = await res.json();
+      const saved: EntradaAnomalia = res.ok && data?.entrada ? data.entrada : candidate;
+      setEntries((prev) => [saved, ...prev]);
+      toast.success(`Registo #${saved.id} guardado no Supabase`);
+    } catch {
+      setEntries((prev) => [candidate, ...prev]);
+      toast.success(`Registo #${candidate.id} adicionado localmente`);
+    }
+
     setManualOpen(false);
     setNewRua("");
     setNewNotas("");
@@ -350,6 +472,34 @@ export default function EntradasPage() {
             </SelectContent>
           </Select>
 
+          <Select value={freguesiaFilter} onValueChange={setFreguesiaFilter}>
+            <SelectTrigger className="h-9 w-[155px] text-xs">
+              <SelectValue placeholder="Freguesia" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todas Freguesias</SelectItem>
+              {FREGUESIA_LIST.map((f) => (
+                <SelectItem key={f} value={f}>
+                  {f}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Select value={gestaoFilter} onValueChange={setGestaoFilter}>
+            <SelectTrigger className="h-9 w-[185px] text-xs">
+              <SelectValue placeholder="Gestão / Competência" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todas Competências</SelectItem>
+              {GESTAO_FILTER_OPTIONS.map((g) => (
+                <SelectItem key={g.value} value={g.value}>
+                  {g.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
           {hasActiveFilters && (
             <Button variant="ghost" size="sm" onClick={resetFilters} className="h-9 text-xs">
               <RotateCcw className="mr-1.5 size-3.5" />
@@ -368,16 +518,58 @@ export default function EntradasPage() {
 
       {/* + Novo Registo Manual Dialog */}
       <Dialog open={manualOpen} onOpenChange={setManualOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-h-[90vh] max-w-xl overflow-y-auto">
           <form onSubmit={handleCreateManualEntry}>
             <DialogHeader>
               <DialogTitle>Novo Registo Manual de Anomalia</DialogTitle>
               <DialogDescription>
-                Registe manualmente uma ocorrência comunicada por munícipes ou equipas de terreno.
+                Coloque o pino no mapa para preencher automaticamente as coordenadas, freguesia e via.
               </DialogDescription>
             </DialogHeader>
 
             <div className="grid gap-4 py-4">
+              <LocationPickerMap
+                lat={newLat}
+                lng={newLng}
+                detectedParish={
+                  newFreguesia === "São Clemente" || newFreguesia === "São Sebastião"
+                    ? `Loulé (${newFreguesia})`
+                    : newFreguesia
+                }
+                onPick={(lat, lng) => void handlePickManualLocation(lat, lng)}
+              />
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="grid gap-1.5">
+                  <Label htmlFor="manual-lat">Latitude</Label>
+                  <Input
+                    id="manual-lat"
+                    type="number"
+                    step="0.000001"
+                    value={newLat}
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      if (Number.isFinite(val)) void handlePickManualLocation(val, newLng);
+                    }}
+                    required
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="manual-lng">Longitude</Label>
+                  <Input
+                    id="manual-lng"
+                    type="number"
+                    step="0.000001"
+                    value={newLng}
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      if (Number.isFinite(val)) void handlePickManualLocation(newLat, val);
+                    }}
+                    required
+                  />
+                </div>
+              </div>
+
               <div className="grid gap-1.5">
                 <Label htmlFor="manual-tipo">Tipo de Anomalia</Label>
                 <Select value={newTipo} onValueChange={(v) => setNewTipo(v as TipoAnomalia)}>
@@ -418,10 +610,11 @@ export default function EntradasPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="Quarteira">Quarteira</SelectItem>
-                      <SelectItem value="Vilamoura">Vilamoura</SelectItem>
-                      <SelectItem value="Almancil">Almancil</SelectItem>
-                      <SelectItem value="Loulé">Loulé</SelectItem>
+                      {FREGUESIA_LIST.map((f) => (
+                        <SelectItem key={f} value={f}>
+                          {f}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -447,15 +640,16 @@ export default function EntradasPage() {
               </div>
 
               <div className="grid gap-1.5">
-                <Label htmlFor="manual-cobertura">Cobertura Estimada (%)</Label>
+                <Label htmlFor="manual-profundidade">Profundidade Estimada (cm)</Label>
                 <Input
-                  id="manual-cobertura"
+                  id="manual-profundidade"
                   type="number"
-                  step="0.05"
-                  min="0.2"
-                  max="8"
-                  value={newCobertura}
-                  onChange={(e) => setNewCobertura(e.target.value)}
+                  step="0.5"
+                  min="0.5"
+                  max="35"
+                  value={newProfundidade}
+                  onChange={(e) => setNewProfundidade(e.target.value)}
+                  placeholder="Ex.: 4.5"
                 />
               </div>
 

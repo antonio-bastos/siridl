@@ -40,6 +40,7 @@ import { AnomalyDetail } from "./anomaly-detail";
 import { AnomalyFiltersDialog, type LocationPreset } from "./anomaly-filters-dialog";
 import { AnomalyList } from "./anomaly-list";
 import { AnomalyMap, type RoadMarkerPin } from "./anomaly-map";
+import { ParishScorecard } from "./parish-scorecard";
 import {
   InspectorPanel,
   type InspectorPanelTab,
@@ -109,6 +110,8 @@ export const AnomalyMapWorkspace: React.FC<AnomalyMapWorkspaceProps> = ({
   const [locationPreset, setLocationPreset] = React.useState<LocationPreset | null>(null);
   const [filtersOpen, setFiltersOpen] = React.useState(false);
   const [focusGroup, setFocusGroup] = React.useState<AnomalyFilterGroup | null>(null);
+  const [freguesiaFilter, setFreguesiaFilter] = React.useState<string>("all");
+  const [gestaoFilter, setGestaoFilter] = React.useState<string>("all");
 
   const [workspaceMode, setWorkspaceMode] = React.useState<WorkspaceMode>("pins");
   const [panelOpen, setPanelOpen] = React.useState(true);
@@ -175,14 +178,50 @@ export const AnomalyMapWorkspace: React.FC<AnomalyMapWorkspaceProps> = ({
     [effectiveAnomalies],
   );
 
-  // Filtered rows inside current geographic selection
+  const parishOptions = React.useMemo(() => {
+    const set = new Set<string>([
+      "Quarteira",
+      "Almancil",
+      "São Clemente",
+      "São Sebastião",
+      "Boliqueime",
+      "Alte",
+      "Salir",
+      "Ameixial",
+      "Tôr",
+    ]);
+    for (const row of effectiveAnomalies) {
+      const p = row.locality?.trim() || row.city?.trim();
+      if (p) set.add(p);
+    }
+    return Array.from(set);
+  }, [effectiveAnomalies]);
+
+  // Filtered rows inside current geographic selection + parish & jurisdiction filters
   const filteredAnomalies = React.useMemo(
     () =>
       effectiveAnomalies.filter((row) => {
         const pt = toAnomalyPoint(row);
-        return inSelection(pt, selection) && matchesAnomalyFilters(pt, filters);
+        if (!inSelection(pt, selection) || !matchesAnomalyFilters(pt, filters)) {
+          return false;
+        }
+        if (freguesiaFilter !== "all") {
+          const rowParish = row.locality?.trim() || row.city?.trim() || "Loulé";
+          if (rowParish !== freguesiaFilter) return false;
+        }
+        if (gestaoFilter !== "all") {
+          const rc = (row.road_class || "").toUpperCase();
+          const rowGestao =
+            rc.includes("EN125") || rc.includes("EN 125") || rc.includes("EN270") || rc.includes("EN396")
+              ? "ip"
+              : rc.includes("A22")
+                ? "concessao"
+                : "cml";
+          if (rowGestao !== gestaoFilter) return false;
+        }
+        return true;
       }),
-    [effectiveAnomalies, selection, filters],
+    [effectiveAnomalies, selection, filters, freguesiaFilter, gestaoFilter],
   );
 
   const assessment = React.useMemo(
@@ -254,13 +293,30 @@ export const AnomalyMapWorkspace: React.FC<AnomalyMapWorkspaceProps> = ({
     [filteredAnomalies],
   );
 
-  const handleUpdateStatus = React.useCallback((id: number, status: RepairStatus) => {
-    setStatusOverrides((prev) => {
-      const next = new Map(prev);
-      next.set(id, status);
-      return next;
-    });
-  }, []);
+  const handleUpdateStatus = React.useCallback(
+    (id: number, status: RepairStatus) => {
+      setStatusOverrides((prev) => {
+        const next = new Map(prev);
+        next.set(id, status);
+        return next;
+      });
+      const target = effectiveAnomalies.find((a) => a.id === id);
+      const statusToPt: Record<RepairStatus, string> = {
+        pending: "Pendente",
+        scheduled: "Agendado",
+        in_progress: "Em Reparação",
+        repaired: "Resolvido",
+      };
+      if (target?.reference) {
+        void fetch(`/api/anomalies/${encodeURIComponent(target.reference)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ estado: statusToPt[status] }),
+        });
+      }
+    },
+    [effectiveAnomalies],
+  );
 
   // Road click -> nearest road or Nominatim reverse geocode -> open RoadExplorer tab
   const handleRoadClick = React.useCallback(
@@ -436,6 +492,7 @@ export const AnomalyMapWorkspace: React.FC<AnomalyMapWorkspaceProps> = ({
         roadPin={roadMarkerPin}
         onRoadClick={handleRoadClick}
         heatmapSummary={thermalSummary}
+        selectedParish={freguesiaFilter}
       >
         {workspaceMode === "heatmap" && (
           <ThermalHeatmapLayer
@@ -456,9 +513,9 @@ export const AnomalyMapWorkspace: React.FC<AnomalyMapWorkspaceProps> = ({
         )}
       </AnomalyMap>
 
-      {/* Top-Left Floating Toolbar (Fitts's & Hick's Law: 2 core controls) */}
-      <div className="pointer-events-none absolute top-4 left-4 right-4 z-10 flex flex-wrap items-center gap-2.5 sm:right-auto">
-        <div className="pointer-events-auto flex items-center gap-2 rounded-2xl border border-border/80 bg-card/95 p-1.5 shadow-lg backdrop-blur-md">
+      {/* Top-Left Floating Toolbar + Parish PCI Scorecard */}
+      <div className="pointer-events-none absolute top-4 left-4 right-4 z-10 flex flex-col items-start gap-2.5 sm:right-auto">
+        <div className="pointer-events-auto flex flex-wrap items-center gap-2 rounded-2xl border border-border/80 bg-card/95 p-1.5 shadow-lg backdrop-blur-md">
           <SegmentedControl
             value={workspaceMode}
             onChange={(mode) => {
@@ -485,6 +542,32 @@ export const AnomalyMapWorkspace: React.FC<AnomalyMapWorkspaceProps> = ({
 
           <div className="h-5 w-px bg-border/80" />
 
+          <select
+            aria-label="Filtrar por Freguesia"
+            value={freguesiaFilter}
+            onChange={(e) => setFreguesiaFilter(e.target.value)}
+            className="h-8 rounded-xl border border-border/70 bg-background px-2.5 text-xs font-medium text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+          >
+            <option value="all">Freguesia: Todas</option>
+            {parishOptions.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+
+          <select
+            aria-label="Filtrar por Gestão / Competência"
+            value={gestaoFilter}
+            onChange={(e) => setGestaoFilter(e.target.value)}
+            className="h-8 rounded-xl border border-border/70 bg-background px-2.5 text-xs font-medium text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+          >
+            <option value="all">Gestão: Todas</option>
+            <option value="cml">CML — Municipal</option>
+            <option value="ip">Infraestruturas de Portugal</option>
+            <option value="concessao">Concessão</option>
+          </select>
+
           <Button
             type="button"
             variant={filterCount > 0 ? "default" : "ghost"}
@@ -504,6 +587,12 @@ export const AnomalyMapWorkspace: React.FC<AnomalyMapWorkspaceProps> = ({
             )}
           </Button>
         </div>
+
+        <ParishScorecard
+          rows={assessment.rows}
+          selectedParish={freguesiaFilter}
+          onSelectParish={setFreguesiaFilter}
+        />
       </div>
 
       {/* Uniform Right-Side Inspector Panel (shared look/geometry across Pinos & Mapa Térmico) */}
