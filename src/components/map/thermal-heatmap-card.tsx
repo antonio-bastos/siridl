@@ -91,7 +91,7 @@ export const ThermalHeatmapCard: React.FC<ThermalHeatmapCardProps> = ({
       </div>
 
       {/* Continuous Green -> Yellow -> Orange -> Red Scale */}
-      <div className="flex flex-col gap-1.5 rounded-xl border border-border/70 bg-muted/35 p-3">
+      <div className="flex flex-col gap-1.5 rounded-xl border bg-background p-3 elev-1 dark:border-input dark:bg-input/30">
         <div className="flex items-center justify-between">
           <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
             Espetro de Densidade
@@ -127,7 +127,7 @@ export const ThermalHeatmapCard: React.FC<ThermalHeatmapCardProps> = ({
                   "flex h-10 cursor-pointer items-center justify-between rounded-xl border px-2.5 text-left text-xs font-medium transition-colors duration-[var(--dur-fast)]",
                   active
                     ? "border-primary/40 bg-primary/10 text-primary elev-1"
-                    : "border-border/60 bg-background/60 text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                    : "border-border bg-background text-muted-foreground elev-1 hover:bg-accent hover:text-accent-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
                 )}
               >
                 <span className="truncate">{m.shortLabel}</span>
@@ -141,7 +141,7 @@ export const ThermalHeatmapCard: React.FC<ThermalHeatmapCardProps> = ({
 
       {/* Radius & Intensity Sliders */}
       {(onRadiusPxChange || onIntensityChange) && (
-        <div className="space-y-2.5 rounded-xl border border-border/70 bg-muted/25 p-3">
+        <div className="space-y-2.5 rounded-xl border bg-background p-3 elev-1 dark:border-input dark:bg-input/30">
           {onRadiusPxChange && (
             <label className="block space-y-1">
               <div className="flex items-center justify-between text-[11px]">
@@ -195,7 +195,7 @@ export const ThermalHeatmapCard: React.FC<ThermalHeatmapCardProps> = ({
             {hotspots.map(([zone, count]) => (
               <div
                 key={zone}
-                className="flex items-center justify-between rounded-lg border border-border/60 bg-background/70 px-2.5 py-1.5 text-xs"
+                className="flex items-center justify-between rounded-lg border bg-background px-2.5 py-1.5 text-xs elev-1 dark:border-input dark:bg-input/30"
               >
                 <span className="truncate font-medium text-foreground">{zone}</span>
                 <span className="ml-1.5 shrink-0 font-mono text-[11px] font-semibold text-status-critical tabular-nums">

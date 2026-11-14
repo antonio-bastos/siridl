@@ -254,21 +254,48 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({
           style={frame.style}
         >
           {resize.handle}
-          <div className="flex shrink-0 items-center gap-2 border-b p-2">
-            {tablist}
-            {actions}
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-9 shrink-0"
-              aria-label="Ocultar painel"
-              title="Ocultar painel"
-              onClick={() => onOpenChange(false)}
-            >
-              <PanelRightClose className="size-4" />
-            </Button>
-          </div>
-          {tabpanels}
+          {pick ? (
+            <div className="flex h-[57px] shrink-0 items-center gap-1.5 border-b pr-2 pl-4">
+              <p className="min-w-0 flex-1 truncate text-sm font-semibold">{pick.title}</p>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-9 shrink-0"
+                aria-label="Voltar ao setor"
+                title="Voltar ao setor"
+                onClick={pick.onClose}
+              >
+                <X className="size-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-9 shrink-0"
+                aria-label="Ocultar painel"
+                title="Ocultar painel"
+                onClick={() => onOpenChange(false)}
+              >
+                <PanelRightClose className="size-4" />
+              </Button>
+            </div>
+          ) : (
+            <div className="flex shrink-0 items-center gap-2 border-b p-2">
+              {tablist}
+              {actions}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-9 shrink-0"
+                aria-label="Ocultar painel"
+                title="Ocultar painel"
+                onClick={() => onOpenChange(false)}
+              >
+                <PanelRightClose className="size-4" />
+              </Button>
+            </div>
+          )}
+          {pick && <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">{pick.body}</div>}
+          <div className={cn("min-h-0 flex-1 flex-col", pick ? "hidden" : "flex")}>{tabpanels}</div>
         </motion.aside>
       ) : (
         <motion.div

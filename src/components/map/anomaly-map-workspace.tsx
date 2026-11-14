@@ -504,14 +504,6 @@ export const AnomalyMapWorkspace: React.FC<AnomalyMapWorkspaceProps> = ({
             )}
           </Button>
         </div>
-
-        <div className="pointer-events-auto hidden items-center gap-2 rounded-full border border-border/80 bg-card/90 px-3.5 py-1.5 text-xs shadow-sm backdrop-blur-md lg:flex">
-          <span className="size-2 rounded-full bg-primary" />
-          <span className="font-medium text-foreground">{areaDisplayLabel}</span>
-          <span className="text-muted-foreground tabular-nums">
-            {assessment.rows.length} {assessment.rows.length === 1 ? "registo" : "registos"}
-          </span>
-        </div>
       </div>
 
       {/* Uniform Right-Side Inspector Panel (shared look/geometry across Pinos & Mapa Térmico) */}
@@ -619,26 +611,21 @@ export const AnomalyMapWorkspace: React.FC<AnomalyMapWorkspaceProps> = ({
       {/* Filter Criteria Dialog Overlay */}
       {filtersOpen && (
         <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="Critérios de filtragem de anomalias"
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4 backdrop-blur-xs"
           onClick={(e) => {
             if (e.target === e.currentTarget) setFiltersOpen(false);
           }}
         >
-          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-border bg-card p-5 shadow-2xl">
-            <AnomalyFiltersDialog
-              filters={filters}
-              location={locationPreset}
-              pool={pointsPool}
-              poolLoading={false}
-              focusGroup={focusGroup}
-              canCancel
-              onApply={handleApplyFilters}
-              onCancel={() => setFiltersOpen(false)}
-            />
-          </div>
+          <AnomalyFiltersDialog
+            filters={filters}
+            location={locationPreset}
+            pool={pointsPool}
+            poolLoading={false}
+            focusGroup={focusGroup}
+            canCancel
+            onApply={handleApplyFilters}
+            onCancel={() => setFiltersOpen(false)}
+          />
         </div>
       )}
     </div>

@@ -8,6 +8,7 @@ import {
   MapContainer,
   Marker,
   Polygon,
+  Popup,
   Rectangle,
   TileLayer,
   Tooltip,
@@ -249,7 +250,13 @@ const ViewportBridge: React.FC<{
   React.useEffect(() => {
     const onResize = () => map.invalidateSize();
     window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    const container = map.getContainer();
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(onResize) : null;
+    ro?.observe(container);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      ro?.disconnect();
+    };
   }, [map]);
 
   return null;
@@ -277,6 +284,7 @@ const AnomalyPinLayer: React.FC<{
 }> = ({ points, rows, hoveredId, onHover, onOpenAnomaly }) => {
   const map = useMap();
   const [zoom, setZoom] = React.useState(() => map.getZoom());
+  const [pinnedId, setPinnedId] = React.useState<number | null>(null);
   const renderer = React.useMemo(() => new PinCanvas(), []);
 
   useMapEvents({
@@ -309,7 +317,7 @@ const AnomalyPinLayer: React.FC<{
               }}
             >
               <Tooltip direction="top" offset={[0, -14]} className="map-card-tip" opacity={1}>
-                <div className="px-3 py-2 text-xs">
+                <div className="w-max max-w-xs px-3.5 py-2.5 text-xs">
                   <div className="font-semibold text-foreground">
                     {cluster.points.length} anomalias nesta zona
                   </div>
@@ -326,68 +334,86 @@ const AnomalyPinLayer: React.FC<{
         const row = rowById.get(point.id);
         const severity: SeverityBand =
           row?.severity ?? (point.area_pct >= 2.0 ? "critical" : point.area_pct >= 0.8 ? "moderate" : "low");
-        const hot = hoveredId === point.id;
+        const isPinned = pinnedId === point.id;
+        const hot = hoveredId === point.id || isPinned;
         const pinColor = SEVERITY_COLOR_VAR[severity];
         const pathOptions: L.CircleMarkerOptions & Partial<PinLook> = {
           renderer,
           pane: PIN_PANE,
           radius: 14,
           stroke: false,
+          color: pinColor,
+          fillColor: pinColor,
           fillOpacity: 1,
           pinColor,
           pinHotColor: pinColor,
           pinHot: hot,
         };
 
+        const cardProps = {
+          photo: row?.image_url,
+          placeholder: "photo" as const,
+          badge: {
+            label: SEVERITY_LABEL[severity],
+            tone: SEVERITY_TONE[severity],
+            dot: SEVERITY_COLOR_VAR[severity],
+          },
+          reference: row ? `#${row.reference}` : undefined,
+          title: row?.title || labelOf(ANOMALY_TYPE_OPTIONS, point.anomaly_type),
+          location: row?.street || labelOf(REPAIR_STATUS_OPTIONS, point.repair_status),
+          place: row ? `${row.locality || row.city} · ${row.road_class}` : undefined,
+          coverage: formatAreaPct(point.area_pct),
+          specs: [
+            `${groupedNumber(point.cavity_area_cm2)} cm²`,
+            `${point.depth_cm.toFixed(1)} cm prof.`,
+            `${(point.confidence * 100).toFixed(0)}% YOLO`,
+          ],
+          detections: row?.detections,
+          imageWidth: row?.image_width,
+          imageHeight: row?.image_height,
+          confidence: point.confidence,
+          action: {
+            label: "Abrir telemetria completa",
+            onClick: () => onOpenAnomaly(point.id),
+          },
+        };
+
         return (
           <CircleMarker
             key={point.id}
             center={[point.latitude, point.longitude]}
+            radius={14}
+            pane={PIN_PANE}
+            {...({ renderer } as Record<string, unknown>)}
             pathOptions={pathOptions}
             eventHandlers={{
               mouseover: () => onHover(point.id),
               mouseout: () => onHover(null),
               click: (e) => {
                 L.DomEvent.stopPropagation(e);
-                onOpenAnomaly(point.id);
               },
+              popupopen: () => setPinnedId(point.id),
+              popupclose: () => setPinnedId((prev) => (prev === point.id ? null : prev)),
             }}
           >
-            <Tooltip
-              direction="top"
-              offset={[0, -28]}
-              interactive
+            {!isPinned && (
+              <Tooltip
+                direction="top"
+                offset={[0, -28]}
+                className="map-card-tip"
+                opacity={1}
+              >
+                <AnomalyPopupCard {...cardProps} />
+              </Tooltip>
+            )}
+            <Popup
+              offset={[0, -26]}
               className="map-card-tip"
-              opacity={1}
+              closeButton
+              autoPan
             >
-              <AnomalyPopupCard
-                photo={row?.image_url}
-                placeholder="photo"
-                badge={{
-                  label: SEVERITY_LABEL[severity],
-                  tone: SEVERITY_TONE[severity],
-                  dot: SEVERITY_COLOR_VAR[severity],
-                }}
-                reference={row ? `#${row.reference}` : undefined}
-                title={row?.title || labelOf(ANOMALY_TYPE_OPTIONS, point.anomaly_type)}
-                location={row?.street || labelOf(REPAIR_STATUS_OPTIONS, point.repair_status)}
-                place={row ? `${row.locality || row.city} · ${row.road_class}` : undefined}
-                coverage={formatAreaPct(point.area_pct)}
-                specs={[
-                  `${groupedNumber(point.cavity_area_cm2)} cm²`,
-                  `${point.depth_cm.toFixed(1)} cm prof.`,
-                  `${(point.confidence * 100).toFixed(0)}% YOLO`,
-                ]}
-                detections={row?.detections}
-                imageWidth={row?.image_width}
-                imageHeight={row?.image_height}
-                confidence={point.confidence}
-                action={{
-                  label: "Abrir telemetria completa",
-                  onClick: () => onOpenAnomaly(point.id),
-                }}
-              />
-            </Tooltip>
+              <AnomalyPopupCard {...cardProps} />
+            </Popup>
           </CircleMarker>
         );
       })}
@@ -507,7 +533,7 @@ export const AnomalyMapInner: React.FC<AnomalyMapProps> = ({
   const activeRadiusM = selection?.kind === "circle" ? clampRadius(selection.radiusM) : null;
 
   return (
-    <div className="siri-map relative h-full w-full overflow-hidden bg-muted">
+    <div className="siri-map relative isolate z-0 h-full w-full overflow-hidden bg-muted">
       <MapContainer
         center={center ?? DEFAULT_CENTER}
         zoom={zoom}
@@ -607,11 +633,11 @@ export const AnomalyMapInner: React.FC<AnomalyMapProps> = ({
         {roadPin && (
           <Marker position={[roadPin.lat, roadPin.lng]} icon={roadBeaconIcon(roadPin)}>
             <Tooltip direction="top" offset={[0, -18]} className="map-card-tip" opacity={1}>
-              <div className="flex items-center gap-2 px-3 py-2 text-xs">
-                <Route className="size-3.5 text-primary" />
-                <div>
+              <div className="flex w-max max-w-xs items-center gap-2.5 px-3.5 py-2.5 text-xs">
+                <Route className="size-4 shrink-0 text-primary" />
+                <div className="min-w-0">
                   <div className="font-semibold text-foreground">{roadPin.name}</div>
-                  <div className="text-[11px] text-muted-foreground">
+                  <div className="whitespace-nowrap text-[11px] text-muted-foreground">
                     {roadPin.count} {roadPin.count === 1 ? "anomalia registada" : "anomalias registadas"}
                   </div>
                 </div>

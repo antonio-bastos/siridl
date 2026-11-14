@@ -1,7 +1,6 @@
 "use client";
 
 import React from "react";
-import { AppShell } from "@/components/layout/app-shell";
 import { AnomalyMapWorkspace } from "@/components/map/anomaly-map-workspace";
 import {
   DEFAULT_AUDIT_ID,
@@ -66,14 +65,12 @@ export default function MapPage() {
   }, [openAnomaly]);
 
   return (
-    <AppShell>
-      <AnomalyMapWorkspace
-        initialAnomalies={SIRI_ANOMALIES}
-        repairedPool={SIRI_REPAIRED_HISTORY}
-        initialAudit={initialAudit}
-        initialAnomalyId={initialAnomalyId}
-        onOpenAnomalyChange={setOpenAnomaly}
-      />
-    </AppShell>
+    <AnomalyMapWorkspace
+      initialAnomalies={SIRI_ANOMALIES}
+      repairedPool={SIRI_REPAIRED_HISTORY}
+      initialAudit={initialAudit}
+      initialAnomalyId={initialAnomalyId}
+      onOpenAnomalyChange={setOpenAnomaly}
+    />
   );
 }
